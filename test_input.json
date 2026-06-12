@@ -1,0 +1,11 @@
+{
+  "source": "both",
+  "transactionType": "sale",
+  "cities": ["Mumbai"],
+  "maxResults": 5,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"],
+    "apifyProxyCountry": "IN"
+  }
+}
