@@ -4,6 +4,8 @@
   "cities": ["Mumbai"],
   "maxResults": 10,
   "proxyConfiguration": {
-    "useApifyProxy": false
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"],
+    "apifyProxyCountry": "IN"
   }
 }

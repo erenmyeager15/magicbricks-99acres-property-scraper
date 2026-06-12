@@ -122,7 +122,11 @@ function normalizeInput(input: ActorInput): NormalizedInput {
         minPrice: finiteNumber(input.minPrice),
         maxPrice: finiteNumber(input.maxPrice),
         maxResults: Math.min(Math.max(Math.floor(input.maxResults ?? DEFAULT_MAX_RESULTS), 1), MAX_RESULTS_CAP),
-        proxyConfiguration: input.proxyConfiguration ?? { useApifyProxy: false },
+        proxyConfiguration: input.proxyConfiguration ?? {
+            useApifyProxy: true,
+            apifyProxyGroups: ['RESIDENTIAL'],
+            apifyProxyCountry: 'IN',
+        },
     };
 }
 

@@ -29,7 +29,9 @@ The actor does not extract phone numbers, emails, or private contact details. If
   "cities": ["Mumbai"],
   "maxResults": 10,
   "proxyConfiguration": {
-    "useApifyProxy": false
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"],
+    "apifyProxyCountry": "IN"
   }
 }
 ```
@@ -74,4 +76,4 @@ This actor uses pay per event pricing.
 
 ## Notes
 
-MagicBricks and 99acres page structures can change over time. If a page returns no listings, try another city, reduce the requested result count, or enable Apify Proxy for the run.
+MagicBricks and 99acres can reject datacenter traffic. The default input uses Apify Residential proxy with India targeting for cloud reliability. If a page returns no listings, try another city or reduce the requested result count.

@@ -58,7 +58,9 @@
       "description": "Optional proxy settings. Enable Apify Proxy if a city page is geo-restricted or rate limited.",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": false
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"],
+        "apifyProxyCountry": "IN"
       }
     }
   },
