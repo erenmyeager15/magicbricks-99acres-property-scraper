@@ -305,6 +305,7 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
         const rooms = cleanText(asString(item.numberOfRooms ?? item['numberOfRooms ']));
         const bhk = extractBhk(`${rooms} ${title}`) ?? extractBhk(description);
         const floorSize = extractFloorSize(item.floorSize);
+        const descriptionArea = extractArea(description);
         const priceText = [
             extractOfferPrice(item),
             description,
@@ -325,16 +326,16 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
             price: state.price ?? parseIndianMoney(priceDisplay),
             priceDisplay,
             depositDisplay: extractDepositDisplay(priceText),
-            area: floorSize.value ?? stateArea.value,
-            areaUnit: floorSize.unit ?? stateArea.unit,
-            areaType: state.areaType ?? (floorSize.value ? 'Built-up Area' : null),
+            area: floorSize.value ?? stateArea.value ?? descriptionArea.value,
+            areaUnit: floorSize.unit ?? stateArea.unit ?? descriptionArea.unit,
+            areaType: state.areaType ?? (floorSize.value ? 'Built-up Area' : extractAreaType(description)),
             bedrooms: bhk ?? state.bhk ?? null,
             bathrooms: finiteNumber(item.numberOfBathroomsTotal) ?? state.bathrooms ?? null,
             balconies: null,
             furnishing: state.furnishing ?? extractFurnishing(description),
             status: extractStatus(description, job.transactionType),
             floor: cleanText(asString(item.floorlevel)) || state.floor || extractFloor(description),
-            projectName: cleanText(asString(address.name)) || state.projectName || null,
+            projectName: cleanText(asString(address.name)) || state.projectName || (is99ProjectUrl(url) ? title : null),
             locality: cleanText(asString(address.streetAddress)) || state.locality || cleanText(asString(address.addressLocality)) || null,
             city: cleanText(asString(address.addressLocality)) || state.city || job.city,
             address: buildAddress(address),
@@ -502,6 +503,10 @@ function extract99AcresId(url: string): string | null {
     return url.match(/(?:spid|npxid)-([^/?#]+)/i)?.[1]
         ?? url.match(/\/([^/?#]+?)(?:\?|\#|$)/)?.[1]
         ?? null;
+}
+
+function is99ProjectUrl(url: string): boolean {
+    return /npxid-/i.test(url);
 }
 
 function extract99StateByUrl(html: string): Map<string, StateListing> {
