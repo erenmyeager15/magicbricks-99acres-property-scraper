@@ -1,0 +1,29 @@
+{
+  "actorSpecification": 1,
+  "name": "magicbricks-99acres-property-scraper",
+  "title": "MagicBricks + 99acres Property Scraper",
+  "description": "Scrape Indian property listings from MagicBricks and 99acres with prices, BHK, area, locality, project, images, and listing URLs. No login or API key required.",
+  "version": "1.0",
+  "buildTag": "latest",
+  "dockerfile": "./Dockerfile",
+  "readme": "../README.md",
+  "input": "../INPUT_SCHEMA.json",
+  "storages": {
+    "dataset": "./dataset_schema.json"
+  },
+  "categories": ["REAL_ESTATE", "LEAD_GENERATION", "OTHER"],
+  "memoryMbytes": 4096,
+  "timeoutSecs": 43200,
+  "pricingInfo": {
+    "pricingModel": "PAY_PER_EVENT",
+    "pricingPerEvent": {
+      "actorChargeEvents": {
+        "property-scraped": {
+          "eventTitle": "Property scraped",
+          "eventDescription": "Charged once for each clean property listing saved to the dataset.",
+          "eventPriceUsd": 0.003
+        }
+      }
+    }
+  }
+}

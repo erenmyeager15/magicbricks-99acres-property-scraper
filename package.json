@@ -1,0 +1,18 @@
+{
+  "name": "magicbricks-99acres-property-scraper",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node ./node_modules/typescript/bin/tsc",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.4.5",
+    "undici": "^6.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.24",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "actorSpecification": 1,
+  "views": {
+    "properties": {
+      "title": "Properties",
+      "transformation": {
+        "fields": [
+          "imageUrl",
+          "source",
+          "transactionType",
+          "cityQuery",
+          "title",
+          "bhk",
+          "priceDisplay",
+          "area",
+          "locality",
+          "projectName",
+          "propertyUrl",
+          "scrapedAt"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "imageUrl": {
+            "label": "Image",
+            "format": "image"
+          },
+          "source": {
+            "label": "Source",
+            "format": "text"
+          },
+          "transactionType": {
+            "label": "Type",
+            "format": "text"
+          },
+          "cityQuery": {
+            "label": "City",
+            "format": "text"
+          },
+          "title": {
+            "label": "Property",
+            "format": "text"
+          },
+          "bhk": {
+            "label": "BHK",
+            "format": "number"
+          },
+          "priceDisplay": {
+            "label": "Price",
+            "format": "text"
+          },
+          "area": {
+            "label": "Area",
+            "format": "number"
+          },
+          "locality": {
+            "label": "Locality",
+            "format": "text"
+          },
+          "projectName": {
+            "label": "Project",
+            "format": "text"
+          },
+          "propertyUrl": {
+            "label": "URL",
+            "format": "link"
+          },
+          "scrapedAt": {
+            "label": "Scraped At",
+            "format": "date"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+storage/
+.apify/
+*.log
+probe*.mjs
