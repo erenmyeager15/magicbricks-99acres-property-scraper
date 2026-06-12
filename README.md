@@ -19,7 +19,7 @@ The actor does not extract phone numbers, emails, or private contact details. If
 
 ## Use Cases
 
-1. Real-estate lead generation for brokers, agencies, and proptech teams
+1. Real-estate market research for brokers, agencies, and proptech teams
 2. Property price monitoring and trend tracking by city and locality
 3. Competitor inventory tracking across major Indian portals
 4. Rental market research and housing supply analysis
@@ -134,7 +134,13 @@ console.log(`Got ${items.length} properties`);
 
 ## Legal and Ethical Use
 
-Use this actor for legitimate research, lead generation, and analysis. You are responsible for complying with each portal's terms, privacy laws, and local regulations wherever you use the data.
+Use this actor for legitimate property listing data collection, real-estate market research, and price monitoring. You are responsible for complying with each portal's terms, privacy laws, and local regulations wherever you use the data.
+
+## Responsible Use
+
+This Actor is intended for lawful collection of publicly available information only. Users are responsible for ensuring their use complies with the source website's terms, robots.txt, applicable privacy laws, including India's DPDP Act, and all local regulations.
+
+Do not use this Actor to collect, store, sell, or misuse personal data without a lawful basis. The Actor author is not responsible for misuse by end users.
 
 ## License
 

@@ -11,7 +11,7 @@
   "storages": {
     "dataset": "./dataset_schema.json"
   },
-  "categories": ["REAL_ESTATE", "LEAD_GENERATION", "OTHER"],
+  "categories": ["REAL_ESTATE", "OTHER"],
   "memoryMbytes": 4096,
   "timeoutSecs": 43200,
   "defaultRunOptions": {
