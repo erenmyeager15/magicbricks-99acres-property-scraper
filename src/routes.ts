@@ -694,14 +694,28 @@ function extractPropertyType(text: string): string | null {
 
 function extractPriceDisplay(text: string | null): string | null {
     if (!text) return null;
-    const matches = [...text.matchAll(/(?:\u20b9|Rs\.?|INR)\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?(?:\s*-\s*(?:\u20b9|Rs\.?|INR)?\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?)?(?:\s*(?:\/\s*month|monthly))?/gi)]
-        .map((match) => cleanText(match[0]))
-        .filter(Boolean);
+    const candidates = [...text.matchAll(/(?:\u20b9|Rs\.?|INR)\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?(?:\s*-\s*(?:\u20b9|Rs\.?|INR)?\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?)?(?:\s*(?:\/\s*month|monthly))?/gi)]
+        .map((match) => ({
+            value: cleanText(match[0]),
+            context: text.slice(match.index ?? 0, (match.index ?? 0) + 80),
+        }))
+        .filter(({ value }) => Boolean(value));
+
+    const matches = candidates
+        .filter(({ value, context }) => isUsefulPriceCandidate(value, context))
+        .map(({ value }) => value);
 
     if (matches.length > 0) return matches[matches.length - 1];
 
     const rentMatch = text.match(/\b[\d,]{4,}\s*(?:monthly|per\s+month|\/\s*month)\b/i);
     return rentMatch ? cleanText(rentMatch[0]) : null;
+}
+
+function isUsefulPriceCandidate(value: string, context: string): boolean {
+    if (/\b(?:Lac|Lakh|Cr|Crore)\b/i.test(value)) return true;
+    if (/(?:\/\s*month|monthly)/i.test(value)) return true;
+    if (/(?:\/\s*sqft|per\s+sqft|sq\.?\s*ft|emi)/i.test(context)) return false;
+    return (parseIndianMoney(value) ?? 0) >= 100000;
 }
 
 function parseIndianMoney(display: string | null): number | null {
