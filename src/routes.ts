@@ -725,7 +725,7 @@ function isUsefulPriceCandidate(value: string, context: string): boolean {
 
 function parseIndianMoney(display: string | null): number | null {
     if (!display) return null;
-    const amountMatch = display.match(/[\d,.]+/);
+    const amountMatch = display.match(/\d[\d,.]*/);
     if (!amountMatch) return null;
 
     const amount = toNumber(amountMatch[0]);
