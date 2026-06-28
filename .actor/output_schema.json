@@ -1,0 +1,14 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "MagicBricks + 99acres Property Scraper Output",
+  "description": "Structured Indian property listing records with sources, transaction types, city queries, property IDs, titles, property types, BHK, prices, area, bedrooms, bathrooms, furnishing, status, project names, localities, addresses, coordinates, image URLs, property URLs, descriptions, and scraped timestamps.",
+  "type": "object",
+  "properties": {
+    "results": {
+      "type": "string",
+      "title": "Indian property listing records",
+      "description": "Clean dataset items containing public MagicBricks and 99acres property listing, price, area, location, amenity, image, and URL data.",
+      "template": "{{links.apiDefaultDatasetUrl}}/items"
+    }
+  }
+}

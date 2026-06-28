@@ -1,68 +1,91 @@
 {
-  "title": "MagicBricks + 99acres Property Scraper Input",
-  "type": "object",
-  "schemaVersion": 1,
-  "properties": {
-    "source": {
-      "title": "Source",
-      "type": "string",
-      "description": "Choose which Indian real-estate portal to scrape.",
-      "editor": "select",
-      "enum": ["both", "magicbricks", "99acres"],
-      "enumTitles": ["Both", "MagicBricks", "99acres"],
-      "default": "both"
-    },
-    "transactionType": {
-      "title": "Transaction type",
-      "type": "string",
-      "description": "Scrape property listings for sale or rent.",
-      "editor": "select",
-      "enum": ["sale", "rent"],
-      "enumTitles": ["Sale", "Rent"],
-      "default": "sale"
-    },
-    "cities": {
-      "title": "Cities",
-      "type": "array",
-      "description": "Indian city names to search, for example Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad.",
-      "editor": "stringList",
-      "items": {
-        "type": "string"
-      },
-      "default": ["Mumbai"]
-    },
-    "minPrice": {
-      "title": "Minimum price",
-      "type": "integer",
-      "description": "Optional minimum price in INR. Records with unknown prices are skipped when a price filter is used.",
-      "editor": "number"
-    },
-    "maxPrice": {
-      "title": "Maximum price",
-      "type": "integer",
-      "description": "Optional maximum price in INR. Records with unknown prices are skipped when a price filter is used.",
-      "editor": "number"
-    },
-    "maxResults": {
-      "title": "Maximum results",
-      "type": "integer",
-      "description": "Maximum number of unique property listings to save.",
-      "editor": "number",
-      "minimum": 1,
-      "maximum": 500,
-      "default": 50
-    },
-    "proxyConfiguration": {
-      "title": "Proxy configuration",
-      "type": "object",
-      "description": "Optional proxy settings. Enable Apify Proxy if a city page is geo-restricted or rate limited.",
-      "editor": "proxy",
-      "default": {
-        "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"],
-        "apifyProxyCountry": "IN"
-      }
-    }
-  },
-  "required": ["source", "transactionType", "cities", "maxResults"]
+    "title":  "MagicBricks + 99acres Property Scraper Input",
+    "type":  "object",
+    "schemaVersion":  1,
+    "properties":  {
+                       "source":  {
+                                      "title":  "Source",
+                                      "type":  "string",
+                                      "description":  "Choose which Indian real-estate portal to scrape.",
+                                      "editor":  "select",
+                                      "enum":  [
+                                                   "both",
+                                                   "magicbricks",
+                                                   "99acres"
+                                               ],
+                                      "enumTitles":  [
+                                                         "Both",
+                                                         "MagicBricks",
+                                                         "99acres"
+                                                     ],
+                                      "default":  "both"
+                                  },
+                       "transactionType":  {
+                                               "title":  "Transaction type",
+                                               "type":  "string",
+                                               "description":  "Scrape property listings for sale or rent.",
+                                               "editor":  "select",
+                                               "enum":  [
+                                                            "sale",
+                                                            "rent"
+                                                        ],
+                                               "enumTitles":  [
+                                                                  "Sale",
+                                                                  "Rent"
+                                                              ],
+                                               "default":  "sale"
+                                           },
+                       "cities":  {
+                                      "title":  "Cities",
+                                      "type":  "array",
+                                      "description":  "Indian city names to search, for example Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad.",
+                                      "editor":  "stringList",
+                                      "items":  {
+                                                    "type":  "string"
+                                                },
+                                      "default":  [
+                                                      "Mumbai"
+                                                  ]
+                                  },
+                       "minPrice":  {
+                                        "title":  "Minimum price",
+                                        "type":  "integer",
+                                        "description":  "Optional minimum price in INR. Records with unknown prices are skipped when a price filter is used.",
+                                        "editor":  "number"
+                                    },
+                       "maxPrice":  {
+                                        "title":  "Maximum price",
+                                        "type":  "integer",
+                                        "description":  "Optional maximum price in INR. Records with unknown prices are skipped when a price filter is used.",
+                                        "editor":  "number"
+                                    },
+                       "maxResults":  {
+                                          "title":  "Maximum results",
+                                          "type":  "integer",
+                                          "description":  "Maximum number of unique property listings to save.",
+                                          "editor":  "number",
+                                          "minimum":  1,
+                                          "maximum":  500,
+                                          "default":  10
+                                      },
+                       "proxyConfiguration":  {
+                                                  "title":  "Proxy configuration",
+                                                  "type":  "object",
+                                                  "description":  "Optional proxy settings. Enable Apify Proxy if a city page is geo-restricted or rate limited.",
+                                                  "editor":  "proxy",
+                                                  "default":  {
+                                                                  "useApifyProxy":  true,
+                                                                  "apifyProxyGroups":  [
+                                                                                           "RESIDENTIAL"
+                                                                                       ],
+                                                                  "apifyProxyCountry":  "IN"
+                                                              }
+                                              }
+                   },
+    "required":  [
+                     "source",
+                     "transactionType",
+                     "cities",
+                     "maxResults"
+                 ]
 }

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
-const DEFAULT_MAX_RESULTS = 50;
+const DEFAULT_MAX_RESULTS = 10;
 const MAX_RESULTS_CAP = 500;
 const REQUEST_HEADERS = {
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -29,6 +29,8 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     const sourceCounts = new Map<string, number>();
     const attemptedSources = new Set<string>();
     let pushed = 0;
+    let spendingLimitReached = false;
+    let fatalBillingError: Error | null = null;
 
     log.info('Starting property scrape', {
         source: input.source,
@@ -38,7 +40,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     });
 
     for (const job of jobs) {
-        if (pushed >= input.maxResults) break;
+        if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
 
         log.info(`Fetching ${job.source} ${job.transactionType} listings`, {
             city: job.city,
@@ -61,19 +63,40 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             const balanceFirstPass = sources.length > 1 && attemptedSources.size < sources.length;
 
             for (const record of parsedRecords) {
-                if (pushed >= input.maxResults) break;
+                if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
                 if (balanceFirstPass && (sourceCounts.get(job.source) ?? 0) >= softCap) break;
 
                 const dedupeKey = record.propertyId || record.propertyUrl;
                 if (seen.has(dedupeKey)) continue;
                 if (!passesPriceFilter(record, input)) continue;
 
-                seen.add(dedupeKey);
-                await Actor.pushData(record);
-                await Actor.charge({ eventName: CHARGE_EVENT_NAME });
-                pushed += 1;
-                pushedFromThisJob += 1;
-                sourceCounts.set(job.source, (sourceCounts.get(job.source) ?? 0) + 1);
+                  try {
+                      const chargeResult = await Actor.pushData(record, CHARGE_EVENT_NAME);
+                      const recordWasSaved = chargeResult.chargedCount > 0
+                          || !chargeResult.eventChargeLimitReached;
+
+                      if (recordWasSaved) {
+                          seen.add(dedupeKey);
+                          pushed += 1;
+                          pushedFromThisJob += 1;
+                          sourceCounts.set(job.source, (sourceCounts.get(job.source) ?? 0) + 1);
+                      }
+
+                    if (chargeResult.eventChargeLimitReached) {
+                        spendingLimitReached = true;
+                        await Actor.setStatusMessage(`Stopped at the user's spending limit after ${pushed} property listings`);
+                        log.info('User spending limit reached; stopping before more property pages are requested.');
+                        break;
+                    }
+                } catch (error) {
+                    fatalBillingError = error instanceof Error ? error : new Error(String(error));
+                    spendingLimitReached = true;
+                    await Actor.setStatusMessage('Stopped because property output billing failed.');
+                    log.error('Stopping property scrape because dataset push with property-scraped charge failed.', {
+                        error: fatalBillingError.message,
+                    });
+                    throw fatalBillingError;
+                }
             }
 
             attemptedSources.add(job.source);
@@ -98,8 +121,10 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
         await delay(randomInt(900, 2200));
     }
 
+    if (fatalBillingError) throw fatalBillingError;
+
     if (pushed === 0) {
-        throw new Error('No property listings were scraped. Try a different city or enable Apify Proxy.');
+        throw new Error('No property listings were saved. Try a different city or enable Apify Proxy.');
     }
 
     log.info('Property scrape finished', { pushed, sourceCounts: Object.fromEntries(sourceCounts) });

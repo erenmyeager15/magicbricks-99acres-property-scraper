@@ -8,15 +8,16 @@
   "dockerfile": "./Dockerfile",
   "readme": "../README.md",
   "input": "../INPUT_SCHEMA.json",
+  "output": "./output_schema.json",
   "storages": {
     "dataset": "./dataset_schema.json"
   },
   "categories": ["REAL_ESTATE", "OTHER"],
-  "memoryMbytes": 4096,
-  "timeoutSecs": 43200,
+  "memoryMbytes": 2048,
+  "timeoutSecs": 1800,
   "defaultRunOptions": {
-    "memoryMbytes": 4096,
-    "timeoutSecs": 43200
+    "memoryMbytes": 2048,
+    "timeoutSecs": 1800
   },
   "exampleRunInput": {
     "contentType": "application/json; charset=utf-8",
@@ -26,10 +27,19 @@
     "pricingModel": "PAY_PER_EVENT",
     "pricingPerEvent": {
       "actorChargeEvents": {
+        "apify-actor-start": {
+          "eventTitle": "Actor start",
+          "eventDescription": "Charged when the run starts to cover startup and the residential proxy session. Number of events depends on memory (one per GB, minimum one).",
+          "eventPriceUsd": 0.001,
+          "isPrimaryEvent": false,
+          "isOneTimeEvent": true
+        },
         "property-scraped": {
           "eventTitle": "Property scraped",
           "eventDescription": "Charged once for each clean property listing saved to the dataset.",
-          "eventPriceUsd": 0.003
+          "eventPriceUsd": 0.003,
+          "isPrimaryEvent": true,
+          "isOneTimeEvent": false
         }
       }
     }

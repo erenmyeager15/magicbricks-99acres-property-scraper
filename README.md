@@ -27,10 +27,13 @@ The actor does not extract phone numbers, emails, or private contact details. If
 
 ## Pricing
 
+Property records are charged only when delivered to the dataset. A small `apify-actor-start` event covers request initialization.
+
 This actor uses Apify Pay Per Event pricing. You pay only for clean records delivered to the dataset — failed, blocked, or empty results are not billed.
 
 | Event name | Price per event | 1,000 results | 10,000 results |
 | --- | ---: | ---: | ---: |
+| `apify-actor-start` | $0.001 | - | - |
 | `property-scraped` | $0.003 | $3.00 | $30.00 |
 
 ## Input
@@ -42,7 +45,7 @@ This actor uses Apify Pay Per Event pricing. You pay only for clean records deli
 | `cities` | array | yes | `["Mumbai"]` | Indian city names, e.g. Mumbai, Pune, Bengaluru, Delhi, Chennai, Hyderabad. |
 | `minPrice` | integer | no | — | Optional minimum price in INR. Listings with unknown prices are skipped when a price filter is set. |
 | `maxPrice` | integer | no | — | Optional maximum price in INR. Listings with unknown prices are skipped when a price filter is set. |
-| `maxResults` | integer | yes | `50` | Maximum unique listings to save (1–500). |
+| `maxResults` | integer | yes | `10` | Maximum unique listings to save (1–500). |
 | `proxyConfiguration` | object | no | Residential, IN | Apify proxy settings. Residential with India targeting recommended. |
 
 ## Example Input
@@ -69,7 +72,7 @@ This actor uses Apify Pay Per Event pricing. You pay only for clean records deli
 4. Add one or more Indian cities, such as Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad.
 5. Optionally set minimum and maximum INR price filters, set `maxResults` (start small to test), then run and export results as CSV, JSON, or Excel.
 
-## Sample Output
+## Output dataset
 
 ```json
 {
@@ -124,7 +127,7 @@ console.log(`Got ${items.length} properties`);
 2. Fetches MagicBricks and 99acres search pages over Apify residential proxies with retries.
 3. Extracts structured listing data (JSON-LD and embedded page state), then cleans and normalizes fields.
 4. Deduplicates by property ID / URL and applies optional price filters.
-5. Charges `property-scraped` only after a clean record is saved, then writes to the Apify Dataset.
+5. Writes each clean record to the Apify Dataset together with the `property-scraped` charge event.
 
 ## Known Limits
 
