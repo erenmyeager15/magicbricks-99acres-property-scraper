@@ -1,12 +1,13 @@
 {
     "title":  "MagicBricks + 99acres Property Scraper Input",
+    "description":  "Collect public Indian property listings. For a low-cost first run, use MagicBricks, sale, Mumbai, one result, no price filters, and the recommended Residential India proxy.",
     "type":  "object",
     "schemaVersion":  1,
     "properties":  {
                        "source":  {
                                       "title":  "Source",
                                       "type":  "string",
-                                      "description":  "Choose which Indian real-estate portal to scrape.",
+                                      "description":  "Choose one portal or both. Start with MagicBricks for the smallest first run.",
                                       "editor":  "select",
                                       "enum":  [
                                                    "both",
@@ -18,7 +19,7 @@
                                                          "MagicBricks",
                                                          "99acres"
                                                      ],
-                                      "default":  "both"
+                                      "default":  "magicbricks"
                                   },
                        "transactionType":  {
                                                "title":  "Transaction type",
@@ -38,11 +39,13 @@
                        "cities":  {
                                       "title":  "Cities",
                                       "type":  "array",
-                                      "description":  "Indian city names to search, for example Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad.",
+                                      "description":  "Indian city names to search, for example Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad. Start with one city.",
                                       "editor":  "stringList",
                                       "items":  {
                                                     "type":  "string"
                                                 },
+                                      "minItems":  1,
+                                      "maxItems":  20,
                                       "default":  [
                                                       "Mumbai"
                                                   ]
@@ -51,27 +54,29 @@
                                         "title":  "Minimum price",
                                         "type":  "integer",
                                         "description":  "Optional minimum price in INR. Records with unknown prices are skipped when a price filter is used.",
-                                        "editor":  "number"
+                                        "editor":  "number",
+                                        "minimum":  0
                                     },
                        "maxPrice":  {
                                         "title":  "Maximum price",
                                         "type":  "integer",
                                         "description":  "Optional maximum price in INR. Records with unknown prices are skipped when a price filter is used.",
-                                        "editor":  "number"
+                                        "editor":  "number",
+                                        "minimum":  0
                                     },
                        "maxResults":  {
                                           "title":  "Maximum results",
                                           "type":  "integer",
-                                          "description":  "Maximum number of unique property listings to save.",
+                                          "description":  "Maximum number of unique property listings to save. Start with 1, inspect the output, and then scale up.",
                                           "editor":  "number",
                                           "minimum":  1,
                                           "maximum":  500,
-                                          "default":  10
+                                          "default":  1
                                       },
                        "proxyConfiguration":  {
                                                   "title":  "Proxy configuration",
                                                   "type":  "object",
-                                                  "description":  "Optional proxy settings. Enable Apify Proxy if a city page is geo-restricted or rate limited.",
+                                                  "description":  "Residential India proxy is recommended for reliable regional access and consumes platform resources.",
                                                   "editor":  "proxy",
                                                   "default":  {
                                                                   "useApifyProxy":  true,

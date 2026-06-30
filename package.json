@@ -5,7 +5,13 @@
   "private": true,
   "scripts": {
     "build": "node ./node_modules/typescript/bin/tsc",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "lint": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "test": "npm run build && node --test dist/input.test.js dist/billing.test.js dist/routes.test.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "dependencies": {
     "apify": "^3.4.5",

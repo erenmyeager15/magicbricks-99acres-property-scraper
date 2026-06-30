@@ -1,11 +1,11 @@
 import { Actor, log } from 'apify';
 import { fetch, ProxyAgent, type Dispatcher } from 'undici';
 import { createHash } from 'node:crypto';
+import { wasPushedRecordSaved } from './billing.js';
+import { normalizeInput } from './input.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
-const DEFAULT_MAX_RESULTS = 10;
-const MAX_RESULTS_CAP = 500;
 const REQUEST_HEADERS = {
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'accept-language': 'en-IN,en;q=0.9',
@@ -70,17 +70,16 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
                 if (seen.has(dedupeKey)) continue;
                 if (!passesPriceFilter(record, input)) continue;
 
-                  try {
-                      const chargeResult = await Actor.pushData(record, CHARGE_EVENT_NAME);
-                      const recordWasSaved = chargeResult.chargedCount > 0
-                          || !chargeResult.eventChargeLimitReached;
+                try {
+                    const chargeResult = await Actor.pushData(record, CHARGE_EVENT_NAME);
+                    const recordWasSaved = wasPushedRecordSaved(chargeResult);
 
-                      if (recordWasSaved) {
-                          seen.add(dedupeKey);
-                          pushed += 1;
-                          pushedFromThisJob += 1;
-                          sourceCounts.set(job.source, (sourceCounts.get(job.source) ?? 0) + 1);
-                      }
+                    if (recordWasSaved) {
+                        seen.add(dedupeKey);
+                        pushed += 1;
+                        pushedFromThisJob += 1;
+                        sourceCounts.set(job.source, (sourceCounts.get(job.source) ?? 0) + 1);
+                    }
 
                     if (chargeResult.eventChargeLimitReached) {
                         spendingLimitReached = true;
@@ -118,7 +117,9 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             });
         }
 
-        await delay(randomInt(900, 2200));
+        if (!spendingLimitReached && !fatalBillingError) {
+            await delay(randomInt(900, 2200));
+        }
     }
 
     if (fatalBillingError) throw fatalBillingError;
@@ -128,31 +129,6 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     }
 
     log.info('Property scrape finished', { pushed, sourceCounts: Object.fromEntries(sourceCounts) });
-}
-
-function normalizeInput(input: ActorInput): NormalizedInput {
-    const source: PropertySource = ['magicbricks', '99acres', 'both'].includes(input.source ?? '')
-        ? input.source as PropertySource
-        : 'both';
-    const transactionType = input.transactionType === 'rent' ? 'rent' : 'sale';
-    const cities = (input.cities?.length ? input.cities : ['Mumbai'])
-        .map((city) => cleanText(city))
-        .filter(Boolean)
-        .slice(0, 20);
-
-    return {
-        source,
-        transactionType,
-        cities: cities.length ? cities : ['Mumbai'],
-        minPrice: finiteNumber(input.minPrice),
-        maxPrice: finiteNumber(input.maxPrice),
-        maxResults: Math.min(Math.max(Math.floor(input.maxResults ?? DEFAULT_MAX_RESULTS), 1), MAX_RESULTS_CAP),
-        proxyConfiguration: input.proxyConfiguration ?? {
-            useApifyProxy: true,
-            apifyProxyGroups: ['RESIDENTIAL'],
-            apifyProxyCountry: 'IN',
-        },
-    };
 }
 
 function resolveSources(source: PropertySource): Array<Exclude<PropertySource, 'both'>> {
@@ -376,7 +352,7 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
     return records;
 }
 
-function passesPriceFilter(record: PropertyRecord, input: NormalizedInput): boolean {
+export function passesPriceFilter(record: PropertyRecord, input: NormalizedInput): boolean {
     if (input.minPrice === null && input.maxPrice === null) return true;
     if (record.price === null) return false;
     if (input.minPrice !== null && record.price < input.minPrice) return false;
@@ -748,7 +724,7 @@ function isUsefulPriceCandidate(value: string, context: string): boolean {
     return (parseIndianMoney(value) ?? 0) >= 100000;
 }
 
-function parseIndianMoney(display: string | null): number | null {
+export function parseIndianMoney(display: string | null): number | null {
     if (!display) return null;
     const amountMatch = display.match(/\d[\d,.]*/);
     if (!amountMatch) return null;
@@ -802,7 +778,7 @@ function buildAddress(address: AnyObject): string | null {
     return parts.length ? [...new Set(parts)].join(', ') : null;
 }
 
-function redactSensitiveText(text: string): string {
+export function redactSensitiveText(text: string): string {
     return text
         .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[redacted email]')
         .replace(/\b(?:\+?91[-\s]?)?[6-9]\d{9}\b/g, '[redacted phone]');

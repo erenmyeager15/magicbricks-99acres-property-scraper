@@ -1,8 +1,8 @@
 {
-  "source": "both",
+  "source": "magicbricks",
   "transactionType": "sale",
   "cities": ["Mumbai"],
-  "maxResults": 5,
+  "maxResults": 1,
   "proxyConfiguration": {
     "useApifyProxy": true,
     "apifyProxyGroups": ["RESIDENTIAL"],

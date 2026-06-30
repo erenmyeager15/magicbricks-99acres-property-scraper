@@ -13,24 +13,26 @@
     "dataset": "./dataset_schema.json"
   },
   "categories": ["REAL_ESTATE", "OTHER"],
-  "memoryMbytes": 2048,
-  "timeoutSecs": 1800,
+  "categoriesVersion": "1.0.0",
   "defaultRunOptions": {
-    "memoryMbytes": 2048,
-    "timeoutSecs": 1800
+    "build": "latest",
+    "memoryMbytes": 4096,
+    "timeoutSecs": 3600
   },
+  "minMemoryMbytes": 4096,
+  "maxMemoryMbytes": 4096,
   "exampleRunInput": {
     "contentType": "application/json; charset=utf-8",
-    "body": "{\n  \"source\": \"both\",\n  \"transactionType\": \"sale\",\n  \"cities\": [\"Mumbai\"],\n  \"maxResults\": 10,\n  \"proxyConfiguration\": {\n    \"useApifyProxy\": true,\n    \"apifyProxyGroups\": [\"RESIDENTIAL\"],\n    \"apifyProxyCountry\": \"IN\"\n  }\n}"
+    "body": "{\"source\":\"magicbricks\",\"transactionType\":\"sale\",\"cities\":[\"Mumbai\"],\"maxResults\":1,\"proxyConfiguration\":{\"useApifyProxy\":true,\"apifyProxyGroups\":[\"RESIDENTIAL\"],\"apifyProxyCountry\":\"IN\"}}"
   },
   "pricingInfo": {
     "pricingModel": "PAY_PER_EVENT",
     "pricingPerEvent": {
       "actorChargeEvents": {
         "apify-actor-start": {
-          "eventTitle": "Actor start",
-          "eventDescription": "Charged when the run starts to cover startup and the residential proxy session. Number of events depends on memory (one per GB, minimum one).",
-          "eventPriceUsd": 0.001,
+          "eventTitle": "Actor Start",
+          "eventDescription": "Charged when the Actor starts. Number of events depends on memory (one per GB, minimum one).",
+          "eventPriceUsd": 0.00005,
           "isPrimaryEvent": false,
           "isOneTimeEvent": true
         },
