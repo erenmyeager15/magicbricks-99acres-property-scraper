@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseIndianMoney, redactSensitiveText } from './routes.js';
+import {
+    createRequestSignal,
+    isRetryableHttpStatus,
+    parseIndianMoney,
+    readBoundedResponseText,
+    redactSensitiveText,
+    shouldDelayBeforeNextJob,
+} from './routes.js';
 
 test('parses crore and lakh prices into INR numbers', () => {
     assert.equal(parseIndianMoney('INR 1.25 Crore'), 12_500_000);
@@ -19,4 +26,63 @@ test('redacts Indian phone numbers and email addresses', () => {
     assert.equal(redacted.includes('owner@example.com'), false);
     assert.match(redacted, /\[redacted phone\]/);
     assert.match(redacted, /\[redacted email\]/);
+});
+
+test('request signal aborts stalled requests at the configured timeout', async () => {
+    const signal = createRequestSignal(5);
+    await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+    assert.equal(signal.aborted, true);
+});
+
+test('classifies transient HTTP statuses without retrying permanent client failures', () => {
+    for (const status of [403, 407, 408, 429, 500, 502, 503, 504, 599]) {
+        assert.equal(isRetryableHttpStatus(status), true, `${status} should be retryable`);
+    }
+    for (const status of [400, 401, 404, 410, 422]) {
+        assert.equal(isRetryableHttpStatus(status), false, `${status} should be permanent`);
+    }
+});
+
+test('rejects and cancels a response whose declared length exceeds the limit', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+        cancel() {
+            cancelled = true;
+        },
+    });
+    const response = new Response(body, { headers: { 'content-length': '11' } });
+
+    await assert.rejects(readBoundedResponseText(response, 10), /exceeds 10 byte limit/);
+    assert.equal(cancelled, true);
+});
+
+test('rejects a chunked response as soon as streamed bytes exceed the limit', async () => {
+    const encoder = new TextEncoder();
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+            controller.enqueue(encoder.encode('12345'));
+            controller.enqueue(encoder.encode('67890'));
+        },
+        cancel() {
+            cancelled = true;
+        },
+    });
+    const response = new Response(body);
+
+    await assert.rejects(readBoundedResponseText(response, 8), /exceeds 8 byte limit/);
+    assert.equal(cancelled, true);
+});
+
+test('reads a response that stays within the byte limit', async () => {
+    const response = new Response('property listings');
+    assert.equal(await readBoundedResponseText(response, 100), 'property listings');
+});
+
+test('delays only when another result and another job may still require a request', () => {
+    assert.equal(shouldDelayBeforeNextJob(9, 10, false, null, true), true);
+    assert.equal(shouldDelayBeforeNextJob(10, 10, false, null, true), false);
+    assert.equal(shouldDelayBeforeNextJob(9, 10, true, null, true), false);
+    assert.equal(shouldDelayBeforeNextJob(9, 10, false, new Error('billing failed'), true), false);
+    assert.equal(shouldDelayBeforeNextJob(9, 10, false, null, false), false);
 });

@@ -6,6 +6,9 @@ import { normalizeInput } from './input.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
+export const REQUEST_TIMEOUT_MS = 30_000;
+export const MAX_HTML_BYTES = 12 * 1024 * 1024;
+const MAX_REQUEST_ATTEMPTS = 3;
 const REQUEST_HEADERS = {
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'accept-language': 'en-IN,en;q=0.9',
@@ -39,7 +42,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
         maxResults: input.maxResults,
     });
 
-    for (const job of jobs) {
+    for (const [jobIndex, job] of jobs.entries()) {
         if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
 
         log.info(`Fetching ${job.source} ${job.transactionType} listings`, {
@@ -117,7 +120,13 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             });
         }
 
-        if (!spendingLimitReached && !fatalBillingError) {
+        if (shouldDelayBeforeNextJob(
+            pushed,
+            input.maxResults,
+            spendingLimitReached,
+            fatalBillingError,
+            jobIndex < jobs.length - 1,
+        )) {
             await delay(randomInt(900, 2200));
         }
     }
@@ -180,31 +189,116 @@ function buildSourceUrl(
         : `https://www.99acres.com/${prefix}-ffid-page-${page}`;
 }
 
+class NonRetryableRequestError extends Error {
+    override name = 'NonRetryableRequestError';
+}
+
+export function isRetryableHttpStatus(status: number): boolean {
+    return status === 403 || status === 407 || status === 408 || status === 429 || status >= 500;
+}
+
+export function createRequestSignal(timeoutMs = REQUEST_TIMEOUT_MS): AbortSignal {
+    return AbortSignal.timeout(timeoutMs);
+}
+
+export function shouldDelayBeforeNextJob(
+    pushed: number,
+    maxResults: number,
+    spendingLimitReached: boolean,
+    fatalBillingError: Error | null,
+    hasMoreJobs: boolean,
+): boolean {
+    return hasMoreJobs && pushed < maxResults && !spendingLimitReached && !fatalBillingError;
+}
+
+type BoundedResponse = {
+    headers: { get(name: string): string | null };
+    body: {
+        cancel(reason?: unknown): Promise<void>;
+        getReader(): {
+            read(): Promise<{ done: boolean; value?: Uint8Array }>;
+            cancel(reason?: unknown): Promise<void>;
+            releaseLock(): void;
+        };
+    } | null;
+};
+
+export async function readBoundedResponseText(
+    response: BoundedResponse,
+    maxBytes = MAX_HTML_BYTES,
+): Promise<string> {
+    const contentLengthHeader = response.headers.get('content-length');
+    const contentLength = contentLengthHeader === null ? null : Number(contentLengthHeader);
+
+    if (contentLength !== null && Number.isFinite(contentLength) && contentLength > maxBytes) {
+        await response.body?.cancel();
+        throw new NonRetryableRequestError(`HTML response exceeds ${maxBytes} byte limit`);
+    }
+
+    if (!response.body) return '';
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let bytesRead = 0;
+    let text = '';
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (!value) continue;
+
+            bytesRead += value.byteLength;
+            if (bytesRead > maxBytes) {
+                await reader.cancel();
+                throw new NonRetryableRequestError(`HTML response exceeds ${maxBytes} byte limit`);
+            }
+
+            text += decoder.decode(value, { stream: true });
+        }
+
+        return text + decoder.decode();
+    } finally {
+        reader.releaseLock();
+    }
+}
+
 async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration): Promise<string> {
     let lastError: Error | null = null;
 
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
+        let dispatcher: Dispatcher | undefined;
+
         try {
             const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
-            const dispatcher: Dispatcher | undefined = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+            dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
             const response = await fetch(url, {
                 headers: REQUEST_HEADERS,
                 dispatcher,
+                signal: createRequestSignal(),
             });
 
-            if ([403, 407, 429, 500, 502, 503, 504].includes(response.status)) {
-                throw new Error(`HTTP ${response.status}`);
+            if (!response.ok) {
+                await response.body?.cancel();
+                const error = new Error(`HTTP ${response.status}`);
+                if (!isRetryableHttpStatus(response.status)) {
+                    throw new NonRetryableRequestError(error.message);
+                }
+                throw error;
             }
 
-            const html = await response.text();
+            const html = await readBoundedResponseText(response);
             if (looksBlocked(html)) {
                 throw new Error('Page appears blocked or challenged');
             }
 
             return html;
         } catch (error) {
-            lastError = error as Error;
-            if (attempt < 3) await delay(1000 * attempt + randomInt(250, 900));
+            lastError = error instanceof Error ? error : new Error(String(error));
+            if (error instanceof NonRetryableRequestError) break;
+            if (attempt < MAX_REQUEST_ATTEMPTS) await delay(1000 * attempt + randomInt(250, 900));
+        } finally {
+            await dispatcher?.close();
         }
     }
 
