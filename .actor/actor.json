@@ -16,11 +16,11 @@
   "categoriesVersion": "1.0.0",
   "defaultRunOptions": {
     "build": "latest",
-    "memoryMbytes": 1024,
+    "memoryMbytes": 512,
     "timeoutSecs": 3600
   },
-  "minMemoryMbytes": 1024,
-  "maxMemoryMbytes": 1024,
+  "minMemoryMbytes": 512,
+  "maxMemoryMbytes": 512,
   "exampleRunInput": {
     "contentType": "application/json; charset=utf-8",
     "body": "{\"source\":\"magicbricks\",\"transactionType\":\"sale\",\"cities\":[\"Mumbai\"],\"maxResults\":1,\"proxyConfiguration\":{\"useApifyProxy\":true,\"apifyProxyGroups\":[\"RESIDENTIAL\"],\"apifyProxyCountry\":\"IN\"}}"

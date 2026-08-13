@@ -8,7 +8,7 @@ import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, Scrap
 const CHARGE_EVENT_NAME = 'property-scraped';
 export const REQUEST_TIMEOUT_MS = 30_000;
 export const MAX_HTML_BYTES = 12 * 1024 * 1024;
-const MAX_REQUEST_ATTEMPTS = 3;
+const MAX_REQUEST_ATTEMPTS = 2;
 const REQUEST_HEADERS = {
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'accept-language': 'en-IN,en;q=0.9',
@@ -31,6 +31,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     const seen = new Set<string>();
     const sourceCounts = new Map<string, number>();
     const attemptedSources = new Set<string>();
+    const exhaustedSearches = new Set<string>();
     let pushed = 0;
     let spendingLimitReached = false;
     let fatalBillingError: Error | null = null;
@@ -44,6 +45,9 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
 
     for (const [jobIndex, job] of jobs.entries()) {
         if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
+
+        const searchKey = `${job.source}:${job.transactionType}:${job.citySlug}`;
+        if (exhaustedSearches.has(searchKey)) continue;
 
         log.info(`Fetching ${job.source} ${job.transactionType} listings`, {
             city: job.city,
@@ -59,6 +63,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
 
             if (parsedRecords.length === 0) {
                 log.warning('No records parsed from page', { source: job.source, city: job.city, page: job.page });
+                exhaustedSearches.add(searchKey);
             }
 
             let pushedFromThisJob = 0;
@@ -127,7 +132,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             fatalBillingError,
             jobIndex < jobs.length - 1,
         )) {
-            await delay(randomInt(900, 2200));
+            await delay(randomInt(400, 900));
         }
     }
 
@@ -148,7 +153,7 @@ function resolveSources(source: PropertySource): Array<Exclude<PropertySource, '
 
 function buildJobs(input: NormalizedInput, sources: Array<Exclude<PropertySource, 'both'>>): ScrapeJob[] {
     const jobs: ScrapeJob[] = [];
-    const max99Pages = Math.min(Math.ceil(input.maxResults / 25) + 2, 20);
+    const max99Pages = calculate99AcresPageLimit(input.maxResults);
 
     for (let page = 1; page <= max99Pages; page += 1) {
         for (const city of input.cities) {
@@ -169,6 +174,10 @@ function buildJobs(input: NormalizedInput, sources: Array<Exclude<PropertySource
     }
 
     return jobs;
+}
+
+export function calculate99AcresPageLimit(maxResults: number): number {
+    return Math.min(Math.ceil(maxResults / 25) + 1, 20);
 }
 
 function buildSourceUrl(

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    calculate99AcresPageLimit,
     createRequestSignal,
     isRetryableHttpStatus,
     parseIndianMoney,
@@ -8,6 +9,13 @@ import {
     redactSensitiveText,
     shouldDelayBeforeNextJob,
 } from './routes.js';
+
+test('limits 99acres pagination to one bounded overfetch page', () => {
+    assert.equal(calculate99AcresPageLimit(1), 2);
+    assert.equal(calculate99AcresPageLimit(25), 2);
+    assert.equal(calculate99AcresPageLimit(26), 3);
+    assert.equal(calculate99AcresPageLimit(1_000), 20);
+});
 
 test('parses crore and lakh prices into INR numbers', () => {
     assert.equal(parseIndianMoney('INR 1.25 Crore'), 12_500_000);
