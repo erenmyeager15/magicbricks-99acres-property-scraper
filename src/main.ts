@@ -7,9 +7,8 @@ await Actor.init();
 try {
     const input = (await Actor.getInput<ActorInput>()) ?? {};
     await scrapeProperties(input);
+    await Actor.exit();
 } catch (error) {
     log.exception(error as Error, 'Actor failed');
-    throw error;
-} finally {
-    await Actor.exit();
+    await Actor.fail((error as Error).message);
 }
