@@ -25,9 +25,10 @@ type StateListing = Omit<Partial<PropertyRecord>, 'area'> & {
 
 export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     const input = normalizeInput(rawInput);
-    const sources = resolveSources(input.source);
     const proxyConfiguration = await Actor.createProxyConfiguration(input.proxyConfiguration);
-    const jobs = buildJobs(input, sources);
+    const configuredSources = resolveSources(input.source);
+    const jobs = buildJobs(input, configuredSources);
+    const sources = [...new Set(jobs.map((job) => job.source))];
     const seen = new Set<string>();
     const sourceCounts = new Map<string, number>();
     const attemptedSources = new Set<string>();
@@ -41,12 +42,15 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
         transactionType: input.transactionType,
         cities: input.cities,
         maxResults: input.maxResults,
+        customSearchUrls: input.searchUrls.length,
     });
 
     for (const [jobIndex, job] of jobs.entries()) {
         if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
 
-        const searchKey = `${job.source}:${job.transactionType}:${job.citySlug}`;
+        const searchKey = job.isCustomUrl
+            ? `${job.source}:${job.url}`
+            : `${job.source}:${job.transactionType}:${job.citySlug}`;
         if (exhaustedSearches.has(searchKey)) continue;
 
         log.info(`Fetching ${job.source} ${job.transactionType} listings`, {
@@ -151,7 +155,15 @@ function resolveSources(source: PropertySource): Array<Exclude<PropertySource, '
     return ['magicbricks', '99acres'];
 }
 
-function buildJobs(input: NormalizedInput, sources: Array<Exclude<PropertySource, 'both'>>): ScrapeJob[] {
+export function buildJobs(input: NormalizedInput, sources: Array<Exclude<PropertySource, 'both'>>): ScrapeJob[] {
+    if (input.searchUrls.length > 0) {
+        return input.searchUrls.map((searchUrl) => ({
+            ...searchUrl,
+            page: 1,
+            isCustomUrl: true,
+        }));
+    }
+
     const jobs: ScrapeJob[] = [];
     const max99Pages = calculate99AcresPageLimit(input.maxResults);
 
@@ -168,6 +180,7 @@ function buildJobs(input: NormalizedInput, sources: Array<Exclude<PropertySource
                     citySlug,
                     page,
                     url: buildSourceUrl(source, input.transactionType, city, citySlug, page),
+                    isCustomUrl: false,
                 });
             }
         }
@@ -347,6 +360,7 @@ function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[] {
         const title = cleanText(listItem?.name) || extractMagicTitle(text, job.city);
         const location = parseMagicLocation(title, job.city);
         const priceDisplay = extractPriceDisplay(text);
+        const price = parseIndianMoney(priceDisplay);
         const area = extractArea(text);
         const bhk = extractBhk(title) ?? extractBhk(text);
         const bathrooms = extractIntegerAfterLabel(text, 'Bathroom');
@@ -361,8 +375,9 @@ function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[] {
             title: title || null,
             propertyType: extractPropertyType(`${title} ${text}`),
             bhk,
-            price: parseIndianMoney(priceDisplay),
+            price,
             priceDisplay,
+            pricePerSqft: calculatePricePerSqft(price, area.value, area.unit),
             depositDisplay: extractDepositDisplay(text),
             area: area.value,
             areaUnit: area.unit,
@@ -418,6 +433,9 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
         ].filter(Boolean).join(' ');
         const priceDisplay = state.priceDisplay ?? extractPriceDisplay(priceText);
         const stateArea = state.area ?? { value: null, unit: null };
+        const price = state.price ?? parseIndianMoney(priceDisplay);
+        const areaValue = floorSize.value ?? stateArea.value ?? descriptionArea.value;
+        const areaUnit = floorSize.unit ?? stateArea.unit ?? descriptionArea.unit;
 
         records.push({
             source: '99acres',
@@ -427,11 +445,12 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
             title: title || null,
             propertyType: state.propertyType ?? extractPropertyType(`${title} ${description}`) ?? 'Apartment',
             bhk: bhk ?? state.bhk ?? null,
-            price: state.price ?? parseIndianMoney(priceDisplay),
+            price,
             priceDisplay,
+            pricePerSqft: calculatePricePerSqft(price, areaValue, areaUnit),
             depositDisplay: extractDepositDisplay(priceText),
-            area: floorSize.value ?? stateArea.value ?? descriptionArea.value,
-            areaUnit: floorSize.unit ?? stateArea.unit ?? descriptionArea.unit,
+            area: areaValue,
+            areaUnit,
             areaType: state.areaType ?? (floorSize.value ? 'Built-up Area' : extractAreaType(description)),
             bedrooms: bhk ?? state.bhk ?? null,
             bathrooms: finiteNumber(item.numberOfBathroomsTotal) ?? state.bathrooms ?? null,
@@ -461,6 +480,28 @@ export function passesPriceFilter(record: PropertyRecord, input: NormalizedInput
     if (input.minPrice !== null && record.price < input.minPrice) return false;
     if (input.maxPrice !== null && record.price > input.maxPrice) return false;
     return true;
+}
+
+export function calculatePricePerSqft(
+    price: number | null,
+    area: number | null,
+    areaUnit: string | null,
+): number | null {
+    if (price === null || area === null || area <= 0 || !areaUnit) return null;
+
+    const normalizedUnit = areaUnit.toLowerCase().replace(/[.\s_-]+/g, '');
+    let squareFeet: number;
+    if (['sqft', 'squarefeet', 'squarefoot'].includes(normalizedUnit)) {
+        squareFeet = area;
+    } else if (['sqm', 'sqmeter', 'sqmeters', 'squaremeter', 'squaremeters', 'm2', 'm²'].includes(normalizedUnit)) {
+        squareFeet = area * 10.7639;
+    } else if (['sqyd', 'squareyard', 'squareyards'].includes(normalizedUnit)) {
+        squareFeet = area * 9;
+    } else {
+        return null;
+    }
+
+    return Math.round(price / squareFeet);
 }
 
 function extractMagicListItems(html: string): Array<{ name: string | null; url: string | null }> {

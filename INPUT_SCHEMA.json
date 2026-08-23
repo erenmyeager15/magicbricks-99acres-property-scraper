@@ -4,6 +4,17 @@
     "type":  "object",
     "schemaVersion":  1,
     "properties":  {
+                       "searchUrls": {
+                                           "title": "Full search URLs",
+                                           "type": "array",
+                                           "description": "Optional MagicBricks or 99acres search-result URLs. Use these to preserve website filters such as locality, BHK, property type, furnishing, budget, and posted-by. When supplied, source, transaction type, and cities are derived from the URLs.",
+                                           "editor": "stringList",
+                                           "items": {
+                                                        "type": "string"
+                                                    },
+                                           "maxItems": 10,
+                                           "default": []
+                                       },
                        "source":  {
                                       "title":  "Source",
                                       "type":  "string",
@@ -87,10 +98,5 @@
                                                               }
                                               }
                    },
-    "required":  [
-                     "source",
-                     "transactionType",
-                     "cities",
-                     "maxResults"
-                 ]
+    "required":  []
 }

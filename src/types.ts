@@ -2,6 +2,7 @@ export type PropertySource = 'magicbricks' | '99acres' | 'both';
 export type TransactionType = 'sale' | 'rent';
 
 export interface ActorInput {
+    searchUrls?: string[];
     source?: PropertySource;
     transactionType?: TransactionType;
     cities?: string[];
@@ -12,6 +13,7 @@ export interface ActorInput {
 }
 
 export interface NormalizedInput {
+    searchUrls: SearchUrlDefinition[];
     source: PropertySource;
     transactionType: TransactionType;
     cities: string[];
@@ -21,6 +23,14 @@ export interface NormalizedInput {
     proxyConfiguration?: Record<string, unknown>;
 }
 
+export interface SearchUrlDefinition {
+    source: Exclude<PropertySource, 'both'>;
+    transactionType: TransactionType;
+    city: string;
+    citySlug: string;
+    url: string;
+}
+
 export interface ScrapeJob {
     source: Exclude<PropertySource, 'both'>;
     transactionType: TransactionType;
@@ -28,6 +38,7 @@ export interface ScrapeJob {
     citySlug: string;
     page: number;
     url: string;
+    isCustomUrl: boolean;
 }
 
 export interface PropertyRecord {
@@ -40,6 +51,7 @@ export interface PropertyRecord {
     bhk: number | null;
     price: number | null;
     priceDisplay: string | null;
+    pricePerSqft: number | null;
     depositDisplay: string | null;
     area: number | null;
     areaUnit: string | null;

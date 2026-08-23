@@ -2,7 +2,7 @@
   "actorSpecification": 1,
   "name": "magicbricks-99acres-property-scraper",
   "title": "MagicBricks + 99acres Property Scraper",
-  "description": "Scrape Indian property listings from MagicBricks and 99acres with prices, BHK, area, locality, project, images, and listing URLs. No login or API key required.",
+  "description": "Scrape MagicBricks and 99acres search URLs or city searches with prices, BHK, area, locality, furnishing, project, images and listing URLs.",
   "version": "1.0",
   "buildTag": "latest",
   "dockerfile": "./Dockerfile",

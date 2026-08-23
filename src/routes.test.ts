@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    buildJobs,
+    calculatePricePerSqft,
     calculate99AcresPageLimit,
     createRequestSignal,
     isRetryableHttpStatus,
@@ -9,6 +11,21 @@ import {
     redactSensitiveText,
     shouldDelayBeforeNextJob,
 } from './routes.js';
+import { normalizeInput } from './input.js';
+
+test('builds one exact job for each supplied search URL without rewriting filters', () => {
+    const input = normalizeInput({
+        searchUrls: ['https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=Mumbai&bedroom=4'],
+        maxResults: 10,
+    });
+    const jobs = buildJobs(input, ['magicbricks']);
+
+    assert.equal(jobs.length, 1);
+    assert.equal(jobs[0].isCustomUrl, true);
+    assert.equal(jobs[0].source, 'magicbricks');
+    assert.equal(jobs[0].city, 'Mumbai');
+    assert.match(jobs[0].url, /cityName=Mumbai&bedroom=4/);
+});
 
 test('limits 99acres pagination to one bounded overfetch page', () => {
     assert.equal(calculate99AcresPageLimit(1), 2);
@@ -25,6 +42,13 @@ test('parses crore and lakh prices into INR numbers', () => {
 test('parses plain INR prices and missing values', () => {
     assert.equal(parseIndianMoney('INR 6,250,000'), 6_250_000);
     assert.equal(parseIndianMoney(null), null);
+});
+
+test('normalizes listing prices to price per square foot', () => {
+    assert.equal(calculatePricePerSqft(10_000_000, 1_000, 'sqft'), 10_000);
+    assert.equal(calculatePricePerSqft(10_000_000, 100, 'sqm'), 9_290);
+    assert.equal(calculatePricePerSqft(10_000_000, 0, 'sqft'), null);
+    assert.equal(calculatePricePerSqft(10_000_000, 1_000, null), null);
 });
 
 test('redacts Indian phone numbers and email addresses', () => {

@@ -1,6 +1,6 @@
 # MagicBricks + 99acres Property Scraper - Prices, BHK, Area & Listings
 
-Scrape public Indian real-estate listings from MagicBricks and 99acres, with prices, BHK, area, locality, project, images, and listing URLs. Export clean data to JSON, CSV, Excel, or HTML, or pull it via the Apify API. No source-site login or API key is required.
+Scrape public Indian real-estate listings from MagicBricks and 99acres, with prices, price per square foot, BHK, area, locality, furnishing, project, images, and listing URLs. Paste full portal search URLs to preserve website filters, or configure a simple source/city search. Export clean data to JSON, CSV, Excel, or HTML, or pull it via the Apify API. No source-site login or API key is required.
 
 Built with Node.js 20, TypeScript, and the Apify SDK using native `fetch` over Apify residential proxies, with retries and resilient extraction so runs are reliable and repeatable. The actor reads each portal's structured listing data (JSON-LD and embedded page state) instead of fragile DOM scraping.
 
@@ -11,6 +11,7 @@ For the first run, select `magicbricks`, `sale`, `Mumbai`, leave price filters e
 - Property title, source (MagicBricks or 99acres), and transaction type (sale or rent)
 - City queried, locality, project name, and address text when published
 - Price display text and parsed INR price
+- Normalized price per square foot when the listing publishes a usable price and area
 - BHK, property type, area and area unit, and area type (carpet / built-up / super built-up)
 - Bedrooms, bathrooms, balconies, furnishing, status, and floor when available
 - Latitude and longitude when published by the source
@@ -49,6 +50,7 @@ Cost-control tips:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
+| `searchUrls` | array | no | `[]` | Up to 10 full MagicBricks or 99acres search-result URLs. Preserves portal filters and overrides the simple source/city search. |
 | `source` | string | yes | `magicbricks` | Which portal to scrape: `both`, `magicbricks`, or `99acres`. |
 | `transactionType` | string | yes | `sale` | Listing type: `sale` or `rent`. |
 | `cities` | array | yes | `["Mumbai"]` | Indian city names, e.g. Mumbai, Pune, Bengaluru, Delhi, Chennai, Hyderabad. |
@@ -73,12 +75,28 @@ Cost-control tips:
 }
 ```
 
+To keep the filters selected on a portal, paste the complete results-page URL instead:
+
+```json
+{
+  "searchUrls": [
+    "https://www.magicbricks.com/property-for-rent/residential-real-estate?cityName=Pune&bedroom=3&budgetMax=50000"
+  ],
+  "maxResults": 25,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"],
+    "apifyProxyCountry": "IN"
+  }
+}
+```
+
 ## How to Scrape MagicBricks and 99acres (Step by Step)
 
 1. Click **Try for free** / **Run**.
-2. Choose `source`: `both`, `magicbricks`, or `99acres`.
-3. Select `transactionType`: `sale` or `rent`.
-4. Start with one Indian city, such as Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad.
+2. For an exact filtered search, paste one or more portal result URLs in `searchUrls`.
+3. For a simple search, choose `source`, `transactionType`, and one or more cities.
+4. Start with one URL or one city, such as Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad.
 5. Leave price filters empty and set `maxResults` to `1` for the first run.
 6. Run and export results as CSV, JSON, or Excel. Add sources, cities, or price filters after checking the output.
 
@@ -95,6 +113,7 @@ Cost-control tips:
   "bhk": 3,
   "price": 63200000,
   "priceDisplay": "Rs. 6.32 Crore",
+  "pricePerSqft": 31041,
   "area": 2036,
   "areaUnit": "sqft",
   "areaType": "Super Built-up Area",
@@ -133,8 +152,8 @@ console.log(`Got ${items.length} properties`);
 
 ## How It Works
 
-1. Validates input and resolves the selected sources and cities.
-2. Fetches MagicBricks and 99acres search pages over Apify residential proxies with retries.
+1. Validates full search URLs, or resolves the selected sources and cities.
+2. Fetches the exact supplied search pages without rewriting their filters, or builds a simple portal search URL.
 3. Extracts structured listing data (JSON-LD and embedded page state), then cleans and normalizes fields.
 4. Deduplicates by property ID / URL and applies optional price filters.
 5. Writes each clean record to the Apify Dataset together with the `property-scraped` charge event.
@@ -145,6 +164,7 @@ console.log(`Got ${items.length} properties`);
 - Price filtering skips listings with an unknown price, since they cannot be compared.
 - MagicBricks and 99acres can reject datacenter traffic. The default input uses Apify Residential proxy with India targeting for reliability.
 - Listing availability and prices can change after scraping; verify important decisions against the source page.
+- Each supplied full search URL is fetched exactly once. For explicit multi-page collection, provide each page URL or use the simple 99acres city search pagination.
 
 ## Legal and Ethical Use
 

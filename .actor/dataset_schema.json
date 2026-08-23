@@ -12,7 +12,13 @@
           "title",
           "bhk",
           "priceDisplay",
+          "pricePerSqft",
           "area",
+          "areaType",
+          "propertyType",
+          "bathrooms",
+          "furnishing",
+          "status",
           "locality",
           "projectName",
           "propertyUrl",
@@ -50,9 +56,33 @@
             "label": "Price",
             "format": "text"
           },
+          "pricePerSqft": {
+            "label": "Price / sqft",
+            "format": "number"
+          },
           "area": {
             "label": "Area",
             "format": "number"
+          },
+          "areaType": {
+            "label": "Area Type",
+            "format": "text"
+          },
+          "propertyType": {
+            "label": "Property Type",
+            "format": "text"
+          },
+          "bathrooms": {
+            "label": "Bathrooms",
+            "format": "number"
+          },
+          "furnishing": {
+            "label": "Furnishing",
+            "format": "text"
+          },
+          "status": {
+            "label": "Status",
+            "format": "text"
           },
           "locality": {
             "label": "Locality",
