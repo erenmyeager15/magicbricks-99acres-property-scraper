@@ -38,6 +38,7 @@ export interface ScrapeJob {
     citySlug: string;
     page: number;
     url: string;
+    searchKey: string;
     isCustomUrl: boolean;
 }
 
@@ -68,8 +69,24 @@ export interface PropertyRecord {
     address: string | null;
     latitude: number | null;
     longitude: number | null;
+    listedBy: string | null;
+    verified: boolean | null;
+    featured: boolean | null;
+    postedAt: string | null;
+    propertyAge: string | null;
+    facing: string | null;
+    ownership: string | null;
+    parking: string | null;
+    reraId: string | null;
+    maintenanceDisplay: string | null;
+    amenities: string[];
     imageUrl: string | null;
+    imageUrls: string[];
+    imagesCount: number;
     propertyUrl: string;
+    searchUrl: string;
+    searchPage: number;
+    resultPosition: number;
     description: string | null;
     scrapedAt: string;
 }

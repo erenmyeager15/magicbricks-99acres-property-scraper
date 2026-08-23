@@ -48,9 +48,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     for (const [jobIndex, job] of jobs.entries()) {
         if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
 
-        const searchKey = job.isCustomUrl
-            ? `${job.source}:${job.url}`
-            : `${job.source}:${job.transactionType}:${job.citySlug}`;
+        const searchKey = job.searchKey;
         if (exhaustedSearches.has(searchKey)) continue;
 
         log.info(`Fetching ${job.source} ${job.transactionType} listings`, {
@@ -156,23 +154,44 @@ function resolveSources(source: PropertySource): Array<Exclude<PropertySource, '
 }
 
 export function buildJobs(input: NormalizedInput, sources: Array<Exclude<PropertySource, 'both'>>): ScrapeJob[] {
+    const requestedPages = calculatePageLimit(input.maxResults);
+
     if (input.searchUrls.length > 0) {
-        return input.searchUrls.map((searchUrl) => ({
-            ...searchUrl,
-            page: 1,
-            isCustomUrl: true,
-        }));
+        const customJobs: ScrapeJob[] = [];
+
+        for (const searchUrl of input.searchUrls) {
+            const searchKey = `${searchUrl.source}:${searchUrl.url}`;
+            for (let page = 1; page <= requestedPages; page += 1) {
+                customJobs.push({
+                    ...searchUrl,
+                    page,
+                    url: paginateSearchUrl(searchUrl.url, searchUrl.source, page),
+                    searchKey,
+                    isCustomUrl: true,
+                });
+            }
+        }
+
+        return customJobs;
     }
 
     const jobs: ScrapeJob[] = [];
-    const max99Pages = calculate99AcresPageLimit(input.maxResults);
+    const maxPages = Math.max(
+        ...sources.map((source) => (
+            source === '99acres' ? calculate99AcresPageLimit(input.maxResults) : requestedPages
+        )),
+    );
 
-    for (let page = 1; page <= max99Pages; page += 1) {
+    for (let page = 1; page <= maxPages; page += 1) {
         for (const city of input.cities) {
             const citySlug = slugCity(city);
 
             for (const source of sources) {
-                if (source === 'magicbricks' && page > 1) continue;
+                const sourcePageLimit = source === '99acres'
+                    ? calculate99AcresPageLimit(input.maxResults)
+                    : requestedPages;
+                if (page > sourcePageLimit) continue;
+
                 jobs.push({
                     source,
                     transactionType: input.transactionType,
@@ -180,6 +199,7 @@ export function buildJobs(input: NormalizedInput, sources: Array<Exclude<Propert
                     citySlug,
                     page,
                     url: buildSourceUrl(source, input.transactionType, city, citySlug, page),
+                    searchKey: `${source}:${input.transactionType}:${citySlug}`,
                     isCustomUrl: false,
                 });
             }
@@ -189,8 +209,33 @@ export function buildJobs(input: NormalizedInput, sources: Array<Exclude<Propert
     return jobs;
 }
 
+export function calculatePageLimit(maxResults: number): number {
+    return Math.min(Math.max(Math.ceil(maxResults / 25), 1), 20);
+}
+
 export function calculate99AcresPageLimit(maxResults: number): number {
-    return Math.min(Math.ceil(maxResults / 25) + 1, 20);
+    return Math.min(calculatePageLimit(maxResults) + 1, 20);
+}
+
+export function paginateSearchUrl(
+    rawUrl: string,
+    source: Exclude<PropertySource, 'both'>,
+    page: number,
+): string {
+    if (page <= 1) return rawUrl;
+
+    const url = new URL(rawUrl);
+    if (source === 'magicbricks') {
+        url.searchParams.set('page', String(page));
+        return url.toString();
+    }
+
+    if (/-ffid(?:-page-\d+)?\/?$/i.test(url.pathname)) {
+        url.pathname = url.pathname.replace(/-ffid(?:-page-\d+)?\/?$/i, `-ffid-page-${page}`);
+    } else {
+        url.searchParams.set('page', String(page));
+    }
+    return url.toString();
 }
 
 function buildSourceUrl(
@@ -202,7 +247,8 @@ function buildSourceUrl(
 ): string {
     if (source === 'magicbricks') {
         const path = transactionType === 'rent' ? 'property-for-rent' : 'property-for-sale';
-        return `https://www.magicbricks.com/${path}/residential-real-estate?cityName=${encodeURIComponent(city)}`;
+        const url = `https://www.magicbricks.com/${path}/residential-real-estate?cityName=${encodeURIComponent(city)}`;
+        return paginateSearchUrl(url, source, page);
     }
 
     const prefix = transactionType === 'rent' ? `property-for-rent-in-${citySlug}` : `property-in-${citySlug}`;
@@ -366,6 +412,8 @@ function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[] {
         const bathrooms = extractIntegerAfterLabel(text, 'Bathroom');
         const balconies = extractIntegerAfterLabel(text, 'Balcony');
         const projectName = location.projectName;
+        const details = extractListingDetails(text);
+        const imageUrls = extractMagicImages(chunk);
 
         records.push({
             source: 'magicbricks',
@@ -394,8 +442,24 @@ function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[] {
             address: location.address,
             latitude: null,
             longitude: null,
-            imageUrl: extractMagicImage(chunk),
+            listedBy: details.listedBy,
+            verified: details.verified,
+            featured: details.featured,
+            postedAt: details.postedAt,
+            propertyAge: details.propertyAge,
+            facing: details.facing,
+            ownership: details.ownership,
+            parking: details.parking,
+            reraId: details.reraId,
+            maintenanceDisplay: details.maintenanceDisplay,
+            amenities: details.amenities,
+            imageUrl: imageUrls[0] ?? null,
+            imageUrls,
+            imagesCount: imageUrls.length,
             propertyUrl,
+            searchUrl: job.url,
+            searchPage: job.page,
+            resultPosition: index + 1,
             description: text ? redactSensitiveText(truncate(text, 700)) : null,
             scrapedAt: new Date().toISOString(),
         });
@@ -411,7 +475,7 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
     const records: PropertyRecord[] = [];
     const seenUrls = new Set<string>();
 
-    for (const item of propertyObjects) {
+    for (const [index, item] of propertyObjects.entries()) {
         const url = absoluteUrl(asString(item.url), 'https://www.99acres.com');
         if (!url || seenUrls.has(url)) continue;
         seenUrls.add(url);
@@ -436,6 +500,12 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
         const price = state.price ?? parseIndianMoney(priceDisplay);
         const areaValue = floorSize.value ?? stateArea.value ?? descriptionArea.value;
         const areaUnit = floorSize.unit ?? stateArea.unit ?? descriptionArea.unit;
+        const details = extractListingDetails(description);
+        const imageUrls = uniqueStrings([
+            state.imageUrl,
+            ...(state.imageUrls ?? []),
+            ...extract99AcresImages(html, url),
+        ]);
 
         records.push({
             source: '99acres',
@@ -464,8 +534,24 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
             address: buildAddress(address),
             latitude: finiteNumber(geo.latitude) ?? state.latitude ?? null,
             longitude: finiteNumber(geo.longitude) ?? state.longitude ?? null,
-            imageUrl: state.imageUrl ?? extract99AcresImage(html, url),
+            listedBy: state.listedBy ?? details.listedBy,
+            verified: state.verified ?? details.verified,
+            featured: state.featured ?? details.featured,
+            postedAt: state.postedAt ?? details.postedAt,
+            propertyAge: state.propertyAge ?? details.propertyAge,
+            facing: state.facing ?? details.facing,
+            ownership: state.ownership ?? details.ownership,
+            parking: state.parking ?? details.parking,
+            reraId: state.reraId ?? details.reraId,
+            maintenanceDisplay: state.maintenanceDisplay ?? details.maintenanceDisplay,
+            amenities: details.amenities,
+            imageUrl: state.imageUrl ?? imageUrls[0] ?? null,
+            imageUrls,
+            imagesCount: imageUrls.length,
             propertyUrl: url,
+            searchUrl: job.url,
+            searchPage: job.page,
+            resultPosition: index + 1,
             description: description ? truncate(description, 800) : null,
             scrapedAt: new Date().toISOString(),
         });
@@ -669,7 +755,13 @@ function extract99StateByUrl(html: string): Map<string, StateListing> {
         const minPrice = finiteNumber(captureJsonString(windowText, 'MIN_PRICE'));
         const area = extract99StateArea(windowText);
         const propertyType = extractPropertyType(captureJsonString(windowText, 'PROP_TYPE_LABEL') ?? '');
-        const imageUrl = captureJsonString(windowText, 'photoUrl') ?? captureJsonString(windowText, 'PHOTO_URL');
+        const imageUrls = extract99ImageUrlsFromText(windowText);
+        const listedByText = captureFirstJsonString(windowText, [
+            'POSTED_BY',
+            'CLASS_LABEL',
+            'CONTACT_TYPE',
+            'CLASS',
+        ]);
 
         map.set(new URL(url).pathname.toLowerCase(), {
             price: minPrice,
@@ -685,7 +777,18 @@ function extract99StateByUrl(html: string): Map<string, StateListing> {
             city: captureJsonString(windowText, 'CITY'),
             latitude: finiteNumber(captureJsonString(windowText, 'LATITUDE')),
             longitude: finiteNumber(captureJsonString(windowText, 'LONGITUDE')),
-            imageUrl,
+            listedBy: extractListedBy(listedByText ?? ''),
+            verified: captureFirstJsonBoolean(windowText, ['IS_VERIFIED', 'VERIFIED']),
+            featured: captureFirstJsonBoolean(windowText, ['IS_FEATURED', 'FEATURED']),
+            postedAt: captureFirstJsonString(windowText, ['POSTING_DATE', 'POSTED_DATE', 'POSTED_ON', 'UPDATE_DATE']),
+            propertyAge: captureFirstJsonString(windowText, ['AGE_LABEL', 'AGE_OF_PROPERTY']),
+            facing: captureFirstJsonString(windowText, ['FACING_LABEL', 'FACING']),
+            ownership: captureFirstJsonString(windowText, ['OWNERSHIP_TYPE', 'OWNERSHIP']),
+            parking: captureFirstJsonString(windowText, ['PARKING_LABEL', 'PARKING']),
+            reraId: captureFirstJsonString(windowText, ['RERA_ID', 'RERA_REGISTRATION_ID']),
+            maintenanceDisplay: captureFirstJsonString(windowText, ['MAINTENANCE', 'MAINTENANCE_CHARGES']),
+            imageUrl: imageUrls[0] ?? captureJsonString(windowText, 'photoUrl') ?? captureJsonString(windowText, 'PHOTO_URL'),
+            imageUrls,
             propertyUrl: url,
             propertyType,
         });
@@ -745,6 +848,30 @@ function captureJsonString(text: string, key: string): string | null {
     return match ? cleanText(decodeJsonString(match[1])) || null : null;
 }
 
+function captureFirstJsonString(text: string, keys: string[]): string | null {
+    for (const key of keys) {
+        const value = captureJsonString(text, key);
+        if (value) return value;
+    }
+    return null;
+}
+
+function captureFirstJsonBoolean(text: string, keys: string[]): boolean | null {
+    for (const key of keys) {
+        const re = new RegExp(
+            `"${escapeRegExp(key)}"\\s*:\\s*(?:"([^"]*)"|(true|false|null|-?\\d+))`,
+            'i',
+        );
+        const match = text.match(re);
+        if (!match) continue;
+
+        const value = cleanText(match[1] ?? match[2]).toLowerCase();
+        if (['true', '1', 'yes', 'y'].includes(value)) return true;
+        if (['false', '0', 'no', 'n'].includes(value)) return false;
+    }
+    return null;
+}
+
 function decodeJsonString(value: string): string {
     try {
         return JSON.parse(`"${value.replace(/"/g, '\\"')}"`) as string;
@@ -756,18 +883,127 @@ function decodeJsonString(value: string): string {
     }
 }
 
-function extract99AcresImage(html: string, url: string): string | null {
-    const windowText = extractRawWindowNearUrl(html, url, 7000);
-    const imageMatches = [...windowText.matchAll(/https?:\/\/(?:imagecdn|mediacdn)\.99acres\.com\/[^"'<>\s)\\]+/gi)]
-        .map((match) => decodeHtml(match[0].replace(/\\u002F/g, '/')))
-        .filter((imageUrl) => !/sprite|icon|logo|rera/i.test(imageUrl));
+const AMENITY_PATTERNS: Array<[string, RegExp]> = [
+    ['Lift', /\blifts?\b/i],
+    ['Security', /\bsecurity(?:\s+guard)?s?\b/i],
+    ['Power Backup', /\bpower\s+backup\b/i],
+    ['Reserved Parking', /\breserved\s+parking\b/i],
+    ['Visitor Parking', /\bvisitor\s+parking\b/i],
+    ['Swimming Pool', /\bswimming\s+pool\b/i],
+    ['Gymnasium', /\b(?:gym|gymnasium)\b/i],
+    ['Club House', /\bclub\s*house\b/i],
+    ['Garden', /\b(?:garden|landscaped\s+garden)\b/i],
+    ['Park', /\bpark\b/i],
+    ["Children's Play Area", /\b(?:children'?s?|kids?)\s+play\s+area\b/i],
+    ['Intercom', /\bintercom\b/i],
+    ['Fire Safety', /\bfire\s+(?:safety|alarm|fighting)\b/i],
+    ['Gated Community', /\bgated\s+(?:community|society)\b/i],
+    ['Water Supply', /\b(?:24\s*x\s*7|24\/7|continuous)\s+water\b|\bwater\s+supply\b/i],
+    ['Air Conditioning', /\bair\s+condition(?:ing|ed)\b|\bcentral\s+ac\b/i],
+];
 
-    return imageMatches[0] ?? null;
+export function extractAmenityNames(text: string): string[] {
+    return AMENITY_PATTERNS
+        .filter(([, pattern]) => pattern.test(text))
+        .map(([name]) => name);
 }
 
-function extractMagicImage(chunk: string): string | null {
-    const match = chunk.match(/https?:\/\/img\.staticmb\.com\/[^"'<>\s)\\]+/i);
-    return match ? decodeHtml(match[0].replace(/\\u002F/g, '/')) : null;
+export function extractListedBy(text: string): string | null {
+    const direct = text.match(
+        /\b(?:posted|listed|advertised)\s+by\s*:?\s*(owner|individual|dealer|broker|builder|agent)\b/i,
+    )?.[1]
+        ?? text.match(/\bcontact\s+(owner|dealer|broker|builder|agent)\b/i)?.[1]
+        ?? text.match(/^\s*(owner|individual|dealer|broker|builder|agent)\s*$/i)?.[1];
+    if (!direct) return null;
+
+    const normalized = direct.toLowerCase();
+    if (normalized === 'individual') return 'Owner';
+    if (normalized === 'dealer' || normalized === 'broker' || normalized === 'agent') return 'Agent';
+    return normalizeLabel(normalized);
+}
+
+export function extractFacing(text: string): string | null {
+    const directionPattern = '(north(?:[ -]east|[ -]west)?|south(?:[ -]east|[ -]west)?|east|west)';
+    const match = text.match(new RegExp('\\b' + directionPattern + '\\s*[- ]?facing\\b', 'i'))
+        ?? text.match(new RegExp('\\bfacing(?:\\s+direction)?\\s*[:\\-]?\\s*' + directionPattern + '\\b', 'i'));
+    return match?.[1] ? normalizeLabel(match[1].replace(/\s+/g, '-')) : null;
+}
+
+export function extractPropertyAge(text: string): string | null {
+    const match = text.match(/\b((?:\d+\s*-\s*\d+|\d+\+?)\s*(?:years?|yrs?)\s*old)\b/i);
+    return match ? cleanText(match[1].replace(/\byrs?\b/i, 'years')) : null;
+}
+
+function extractOwnership(text: string): string | null {
+    const match = text.match(/\b(freehold|leasehold|co-operative\s+society|cooperative\s+society|power\s+of\s+attorney)\b/i);
+    return match ? normalizeLabel(match[1]) : null;
+}
+
+function extractParking(text: string): string | null {
+    const match = text.match(/\b(?:(\d+)\s+)?(covered|open|stilt|basement)?\s*(?:car\s+)?parking\b/i);
+    if (!match) return null;
+
+    const parts = [match[1], match[2], 'Parking'].filter(Boolean).map(cleanText);
+    return parts.length > 1 ? parts.join(' ') : 'Parking available';
+}
+
+function extractReraId(text: string): string | null {
+    const match = text.match(/\bRERA\s*(?:registration\s*)?(?:ID|No\.?|number)\s*[:#-]?\s*([A-Z0-9][A-Z0-9/-]{4,})\b/i);
+    return match ? match[1] : null;
+}
+
+function extractMaintenanceDisplay(text: string): string | null {
+    const match = text.match(
+        /\bmaintenance(?:\s+charges?)?\s*[:\-]?\s*((?:INR|Rs\.?|\u20b9)\s*[\d,.]+(?:\s*(?:\/\s*month|monthly))?)/i,
+    );
+    return match ? cleanText(match[1]) : null;
+}
+
+function extractPostedAt(text: string): string | null {
+    const match = text.match(
+        /\b(?:posted|updated|listed)\s*(?:on|:)?\s*(today|yesterday|\d+\s+(?:minutes?|hours?|days?|weeks?|months?)\s+ago|\d{1,2}[\/-][A-Za-z0-9]{1,9}[\/-]\d{2,4})\b/i,
+    );
+    return match ? cleanText(match[1]) : null;
+}
+
+function extractListingDetails(text: string) {
+    return {
+        listedBy: extractListedBy(text),
+        verified: /\b(?:verified\s+(?:property|listing)|property\s+verified)\b/i.test(text) ? true : null,
+        featured: /\b(?:featured|premium)\s+(?:property|listing)\b/i.test(text) ? true : null,
+        postedAt: extractPostedAt(text),
+        propertyAge: extractPropertyAge(text),
+        facing: extractFacing(text),
+        ownership: extractOwnership(text),
+        parking: extractParking(text),
+        reraId: extractReraId(text),
+        maintenanceDisplay: extractMaintenanceDisplay(text),
+        amenities: extractAmenityNames(text),
+    };
+}
+
+function uniqueStrings(values: Array<string | null | undefined>): string[] {
+    return [...new Set(values.map((value) => cleanText(value)).filter(Boolean))];
+}
+
+function extract99ImageUrlsFromText(text: string): string[] {
+    return uniqueStrings(
+        [...text.matchAll(/https?:\/\/(?:imagecdn|mediacdn)\.99acres\.com\/[^"'<>\s)\\]+/gi)]
+            .map((match) => decodeHtml(match[0].replace(/\\u002F/g, '/')))
+            .filter((imageUrl) => !/sprite|icon|logo|rera|\.m3u8(?:$|\?)/i.test(imageUrl)),
+    ).slice(0, 1);
+}
+
+function extract99AcresImages(html: string, url: string): string[] {
+    return extract99ImageUrlsFromText(extractRawWindowNearUrl(html, url, 7000));
+}
+
+function extractMagicImages(chunk: string): string[] {
+    return uniqueStrings(
+        [...chunk.matchAll(/https?:\/\/img\.staticmb\.com\/[^"'<>\s)\\]+/gi)]
+            .map((match) => decodeHtml(match[0].replace(/\\u002F/g, '/')))
+            .filter((imageUrl) => !/sprite|icon|logo/i.test(imageUrl)),
+    ).slice(0, 20);
 }
 
 function extractOfferPrice(item: AnyObject): string | null {

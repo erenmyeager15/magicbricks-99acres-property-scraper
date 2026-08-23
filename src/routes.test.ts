@@ -2,10 +2,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildJobs,
+    calculatePageLimit,
     calculatePricePerSqft,
     calculate99AcresPageLimit,
     createRequestSignal,
+    extractAmenityNames,
+    extractFacing,
+    extractListedBy,
+    extractPropertyAge,
     isRetryableHttpStatus,
+    paginateSearchUrl,
     parseIndianMoney,
     readBoundedResponseText,
     redactSensitiveText,
@@ -28,10 +34,43 @@ test('builds one exact job for each supplied search URL without rewriting filter
 });
 
 test('limits 99acres pagination to one bounded overfetch page', () => {
+    assert.equal(calculatePageLimit(1), 1);
+    assert.equal(calculatePageLimit(25), 1);
+    assert.equal(calculatePageLimit(26), 2);
     assert.equal(calculate99AcresPageLimit(1), 2);
     assert.equal(calculate99AcresPageLimit(25), 2);
     assert.equal(calculate99AcresPageLimit(26), 3);
     assert.equal(calculate99AcresPageLimit(1_000), 20);
+});
+
+test('paginates full search URLs while preserving their filters', () => {
+    const magicUrl = paginateSearchUrl(
+        'https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=Mumbai&bedroom=4',
+        'magicbricks',
+        2,
+    );
+    const acresUrl = paginateSearchUrl(
+        'https://www.99acres.com/property-in-bengaluru-ffid?property_type=1&budget_min=5000000',
+        '99acres',
+        3,
+    );
+
+    assert.match(magicUrl, /cityName=Mumbai/);
+    assert.match(magicUrl, /bedroom=4/);
+    assert.match(magicUrl, /page=2/);
+    assert.match(acresUrl, /property-in-bengaluru-ffid-page-3/);
+    assert.match(acresUrl, /property_type=1/);
+    assert.match(acresUrl, /budget_min=5000000/);
+});
+
+test('extracts safe property detail fields from public listing text', () => {
+    const text = 'Posted by owner. This east-facing freehold flat is 0-1 year old with lift(s), security guard and gymnasium.';
+
+    assert.equal(extractListedBy(text), 'Owner');
+    assert.equal(extractListedBy('Get Phone No. Contact Agent'), 'Agent');
+    assert.equal(extractFacing(text), 'East');
+    assert.equal(extractPropertyAge(text), '0-1 year old');
+    assert.deepEqual(extractAmenityNames(text), ['Lift', 'Security', 'Gymnasium']);
 });
 
 test('parses crore and lakh prices into INR numbers', () => {

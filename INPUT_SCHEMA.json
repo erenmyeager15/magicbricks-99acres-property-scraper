@@ -7,7 +7,7 @@
                        "searchUrls": {
                                            "title": "Full search URLs",
                                            "type": "array",
-                                           "description": "Optional MagicBricks or 99acres search-result URLs. Use these to preserve website filters such as locality, BHK, property type, furnishing, budget, and posted-by. When supplied, source, transaction type, and cities are derived from the URLs.",
+                                           "description": "Optional MagicBricks or 99acres search-result URLs. Preserves filters such as locality, BHK, property type, furnishing, budget, and posted-by, then paginates toward maxResults. When supplied, source, transaction type, and cities are derived from the URLs.",
                                            "editor": "stringList",
                                            "items": {
                                                         "type": "string"
@@ -78,7 +78,7 @@
                        "maxResults":  {
                                           "title":  "Maximum results",
                                           "type":  "integer",
-                                          "description":  "Maximum number of unique property listings to save. Start with 1, inspect the output, and then scale up.",
+                                          "description":  "Maximum number of unique property listings to save across automatically paginated searches. Start with 1, inspect the output, and then scale up.",
                                           "editor":  "number",
                                           "minimum":  1,
                                           "maximum":  500,

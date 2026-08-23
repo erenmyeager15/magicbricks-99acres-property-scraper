@@ -19,8 +19,15 @@
           "bathrooms",
           "furnishing",
           "status",
+          "listedBy",
+          "propertyAge",
+          "facing",
+          "parking",
+          "imagesCount",
           "locality",
           "projectName",
+          "searchPage",
+          "resultPosition",
           "propertyUrl",
           "scrapedAt"
         ]
@@ -84,6 +91,26 @@
             "label": "Status",
             "format": "text"
           },
+          "listedBy": {
+            "label": "Listed By",
+            "format": "text"
+          },
+          "propertyAge": {
+            "label": "Property Age",
+            "format": "text"
+          },
+          "facing": {
+            "label": "Facing",
+            "format": "text"
+          },
+          "parking": {
+            "label": "Parking",
+            "format": "text"
+          },
+          "imagesCount": {
+            "label": "Images",
+            "format": "number"
+          },
           "locality": {
             "label": "Locality",
             "format": "text"
@@ -91,6 +118,14 @@
           "projectName": {
             "label": "Project",
             "format": "text"
+          },
+          "searchPage": {
+            "label": "Search Page",
+            "format": "number"
+          },
+          "resultPosition": {
+            "label": "Position",
+            "format": "number"
           },
           "propertyUrl": {
             "label": "URL",

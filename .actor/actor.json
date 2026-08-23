@@ -1,8 +1,8 @@
 {
   "actorSpecification": 1,
   "name": "magicbricks-99acres-property-scraper",
-  "title": "MagicBricks + 99acres Property Scraper",
-  "description": "Scrape MagicBricks and 99acres search URLs or city searches with prices, BHK, area, locality, furnishing, project, images and listing URLs.",
+  "title": "MagicBricks & 99acres Property Data Scraper",
+  "description": "Scrape filtered MagicBricks and 99acres searches with automatic pagination, prices, amenities, property details, seller category, images, and result positions.",
   "version": "1.0",
   "buildTag": "latest",
   "dockerfile": "./Dockerfile",

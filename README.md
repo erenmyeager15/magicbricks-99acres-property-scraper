@@ -1,6 +1,6 @@
-# MagicBricks + 99acres Property Scraper - Prices, BHK, Area & Listings
+# MagicBricks & 99acres Property Data Scraper - Search URLs, Amenities & Prices
 
-Scrape public Indian real-estate listings from MagicBricks and 99acres, with prices, price per square foot, BHK, area, locality, furnishing, project, images, and listing URLs. Paste full portal search URLs to preserve website filters, or configure a simple source/city search. Export clean data to JSON, CSV, Excel, or HTML, or pull it via the Apify API. No source-site login or API key is required.
+Scrape public Indian real-estate listings from MagicBricks and 99acres, with prices, price per square foot, BHK, area, locality, furnishing, amenities, seller category, property details, images, and listing URLs. Paste full portal search URLs to preserve website filters and paginate them automatically, or configure a simple source/city search. Export clean data to JSON, CSV, Excel, or HTML, or pull it via the Apify API. No source-site login or API key is required.
 
 Built with Node.js 20, TypeScript, and the Apify SDK using native `fetch` over Apify residential proxies, with retries and resilient extraction so runs are reliable and repeatable. The actor reads each portal's structured listing data (JSON-LD and embedded page state) instead of fragile DOM scraping.
 
@@ -14,8 +14,11 @@ For the first run, select `magicbricks`, `sale`, `Mumbai`, leave price filters e
 - Normalized price per square foot when the listing publishes a usable price and area
 - BHK, property type, area and area unit, and area type (carpet / built-up / super built-up)
 - Bedrooms, bathrooms, balconies, furnishing, status, and floor when available
+- Public seller category (owner, agent, or builder), verification/featured markers, and posting date when published
+- Property age, facing, ownership, parking, RERA ID, maintenance, and detected amenities
 - Latitude and longitude when published by the source
-- Image URL, listing URL, short description, and scrape timestamp
+- Primary image, published card image URLs, image count, listing URL, and short description
+- Search-page URL, page number, and result position for traceability
 - MagicBricks and 99acres records merged into one deduplicated dataset
 
 This independent Actor does not extract phone numbers, emails, private contact details, accounts, messages, saved properties, or private dashboard data. If sensitive text appears in a public page description, it is redacted before saving.
@@ -50,7 +53,7 @@ Cost-control tips:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `searchUrls` | array | no | `[]` | Up to 10 full MagicBricks or 99acres search-result URLs. Preserves portal filters and overrides the simple source/city search. |
+| `searchUrls` | array | no | `[]` | Up to 10 full MagicBricks or 99acres search-result URLs. Preserves portal filters, paginates toward `maxResults`, and overrides the simple source/city search. |
 | `source` | string | yes | `magicbricks` | Which portal to scrape: `both`, `magicbricks`, or `99acres`. |
 | `transactionType` | string | yes | `sale` | Listing type: `sale` or `rent`. |
 | `cities` | array | yes | `["Mumbai"]` | Indian city names, e.g. Mumbai, Pune, Bengaluru, Delhi, Chennai, Hyderabad. |
@@ -122,6 +125,11 @@ To keep the filters selected on a portal, paste the complete results-page URL in
   "furnishing": "Unfurnished",
   "status": "Under construction",
   "floor": "16",
+  "listedBy": "Builder",
+  "propertyAge": "0-1 year old",
+  "facing": "East",
+  "parking": "1 Covered Parking",
+  "amenities": ["Lift", "Security", "Power Backup"],
   "projectName": "Lodha Aureus , Sewri",
   "locality": "Sewri, Mumbai",
   "city": "Mumbai South",
@@ -129,7 +137,11 @@ To keep the filters selected on a portal, paste the complete results-page URL in
   "latitude": 19.000645,
   "longitude": 72.854859,
   "imageUrl": "https://imagecdn.99acres.com/media1/37936/8/758728772T-1778670458404.jpg",
+  "imageUrls": ["https://imagecdn.99acres.com/media1/37936/8/758728772T-1778670458404.jpg"],
+  "imagesCount": 1,
   "propertyUrl": "https://www.99acres.com/3-bhk-bedroom-apartment-flat-for-sale-in-sewri-south-mumbai-2036-sqft-spid-H91004828",
+  "searchPage": 1,
+  "resultPosition": 1,
   "scrapedAt": "2026-06-12T19:55:25.019Z"
 }
 ```
@@ -153,18 +165,18 @@ console.log(`Got ${items.length} properties`);
 ## How It Works
 
 1. Validates full search URLs, or resolves the selected sources and cities.
-2. Fetches the exact supplied search pages without rewriting their filters, or builds a simple portal search URL.
+2. Fetches the supplied search URL without rewriting its filters, then follows bounded result pages toward `maxResults`; or builds simple portal search URLs.
 3. Extracts structured listing data (JSON-LD and embedded page state), then cleans and normalizes fields.
 4. Deduplicates by property ID / URL and applies optional price filters.
 5. Writes each clean record to the Apify Dataset together with the `property-scraped` charge event.
 
 ## Known Limits
 
-- Some fields are conditional: geo coordinates, floor, balconies, and deposit are only saved when the source publishes them. MagicBricks rarely exposes coordinates, so those may be `null`.
+- Many detail fields are conditional: geo coordinates, seller category, RERA ID, floor, balconies, parking, and deposit are only saved when the source publishes them. MagicBricks rarely exposes coordinates, so those may be `null`.
 - Price filtering skips listings with an unknown price, since they cannot be compared.
 - MagicBricks and 99acres can reject datacenter traffic. The default input uses Apify Residential proxy with India targeting for reliability.
 - Listing availability and prices can change after scraping; verify important decisions against the source page.
-- Each supplied full search URL is fetched exactly once. For explicit multi-page collection, provide each page URL or use the simple 99acres city search pagination.
+- Pagination is bounded to 20 pages per search. Highly repetitive pages can yield fewer unique records than `maxResults`.
 
 ## Legal and Ethical Use
 
