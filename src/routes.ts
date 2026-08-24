@@ -34,6 +34,8 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     const attemptedSources = new Set<string>();
     const exhaustedSearches = new Set<string>();
     let pushed = 0;
+    let processedPages = 0;
+    let failedPages = 0;
     let spendingLimitReached = false;
     let fatalBillingError: Error | null = null;
 
@@ -62,6 +64,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             const parsedRecords = job.source === 'magicbricks'
                 ? parseMagicBricks(html, job)
                 : parse99Acres(html, job);
+            processedPages += 1;
 
             if (parsedRecords.length === 0) {
                 log.warning('No records parsed from page', { source: job.source, city: job.city, page: job.page });
@@ -119,6 +122,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             });
         } catch (error) {
             attemptedSources.add(job.source);
+            failedPages += 1;
             log.warning(`Skipping page after retries: ${(error as Error).message}`, {
                 source: job.source,
                 city: job.city,
@@ -141,10 +145,25 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     if (fatalBillingError) throw fatalBillingError;
 
     if (pushed === 0) {
-        throw new Error('No property listings were saved. Try a different city or enable Apify Proxy.');
+        if (shouldFailEmptyRun(processedPages)) {
+            throw new Error('All property pages failed after retries. Try Residential India proxy or run again later.');
+        }
+
+        await Actor.setStatusMessage('Search completed successfully, but no listings matched the supplied filters.');
+        log.info('Property scrape finished with no matching listings', { processedPages, failedPages });
+        return;
     }
 
-    log.info('Property scrape finished', { pushed, sourceCounts: Object.fromEntries(sourceCounts) });
+    log.info('Property scrape finished', {
+        pushed,
+        processedPages,
+        failedPages,
+        sourceCounts: Object.fromEntries(sourceCounts),
+    });
+}
+
+export function shouldFailEmptyRun(processedPages: number): boolean {
+    return processedPages === 0;
 }
 
 function resolveSources(source: PropertySource): Array<Exclude<PropertySource, 'both'>> {

@@ -35,7 +35,7 @@ This independent Actor does not extract phone numbers, emails, private contact d
 
 Property records are charged only when delivered to the dataset. The `apify-actor-start` event is charged according to Actor memory, with at least one startup event.
 
-This Actor uses Apify Pay Per Event pricing. Failed, blocked, or empty pages do not create `property-scraped` charges, but the startup event and platform resource consumption can still apply.
+This Actor uses Apify Pay Per Event pricing. Failed, blocked, or empty pages do not create `property-scraped` charges, but the startup event and platform resource consumption can still apply. A valid search with no matching listings finishes successfully with an empty dataset; the run fails only when every requested property page fails after retries or output billing fails.
 
 | Event name | Price per event | 1,000 results | 10,000 results |
 | --- | ---: | ---: | ---: |

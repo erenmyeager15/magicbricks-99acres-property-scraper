@@ -16,6 +16,7 @@ import {
     readBoundedResponseText,
     redactSensitiveText,
     shouldDelayBeforeNextJob,
+    shouldFailEmptyRun,
 } from './routes.js';
 import { normalizeInput } from './input.js';
 
@@ -156,4 +157,10 @@ test('delays only when another result and another job may still require a reques
     assert.equal(shouldDelayBeforeNextJob(9, 10, true, null, true), false);
     assert.equal(shouldDelayBeforeNextJob(9, 10, false, new Error('billing failed'), true), false);
     assert.equal(shouldDelayBeforeNextJob(9, 10, false, null, false), false);
+});
+
+test('treats a processed empty search as successful but fails a total source outage', () => {
+    assert.equal(shouldFailEmptyRun(1), false);
+    assert.equal(shouldFailEmptyRun(3), false);
+    assert.equal(shouldFailEmptyRun(0), true);
 });
