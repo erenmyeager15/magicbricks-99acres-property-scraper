@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeInput } from './input.js';
 
-test('uses a one-result MagicBricks Residential India default', () => {
+test('uses a one-result Mumbai MagicBricks Residential India default', () => {
     const input = normalizeInput(null);
 
     assert.equal(input.source, 'magicbricks');

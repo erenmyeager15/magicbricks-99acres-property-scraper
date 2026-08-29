@@ -4,7 +4,11 @@ Scrape public Indian real-estate listings from MagicBricks and 99acres, with pri
 
 Built with Node.js 20, TypeScript, and the Apify SDK using native `fetch` over Apify residential proxies, with retries and resilient extraction so runs are reliable and repeatable. The actor reads each portal's structured listing data (JSON-LD and embedded page state) instead of fragile DOM scraping.
 
-For the first run, select `magicbricks`, `sale`, `Mumbai`, leave price filters empty, set `maxResults` to `1`, and keep the recommended Residential India proxy enabled. Inspect that record, then add 99acres, more cities, or price filters.
+## Quick Start
+
+The input form is ready to run without editing: it collects one Mumbai property-for-sale listing from MagicBricks through the recommended Residential India proxy. Click **Start**, inspect the clean dataset record, and then increase the result limit or change the portal, city, transaction type, or filters.
+
+If you already filtered a search on MagicBricks or 99acres, paste the complete results-page URL in **Exact portal search**. That keeps the portal's locality, BHK, property type, furnishing, budget, and posted-by filters.
 
 ## What It Extracts
 
@@ -44,7 +48,7 @@ This Actor uses Apify Pay Per Event pricing. Failed, blocked, or empty pages do 
 
 Cost-control tips:
 
-- Start with MagicBricks, one city, and `maxResults: 1`.
+- Run the prefilled MagicBricks + Mumbai sample with `maxResults: 1`.
 - Leave price filters empty for the first run; unknown-price listings are excluded when filters are active.
 - Set a maximum cost per run in Apify Console. The Actor stops requesting additional pages when Apify reports that limit.
 - Use `both` only after checking a one-source result.
@@ -56,7 +60,7 @@ Cost-control tips:
 | `searchUrls` | array | no | `[]` | Up to 10 full MagicBricks or 99acres search-result URLs. Preserves portal filters, paginates toward `maxResults`, and overrides the simple source/city search. |
 | `source` | string | yes | `magicbricks` | Which portal to scrape: `both`, `magicbricks`, or `99acres`. |
 | `transactionType` | string | yes | `sale` | Listing type: `sale` or `rent`. |
-| `cities` | array | yes | `["Mumbai"]` | Indian city names, e.g. Mumbai, Pune, Bengaluru, Delhi, Chennai, Hyderabad. |
+| `cities` | array | yes | `["Mumbai"]` | Indian city names, e.g. Mumbai, Bengaluru, Pune, Delhi, Chennai, Hyderabad. |
 | `minPrice` | integer | no | none | Optional minimum price in INR. Listings with unknown prices are skipped when a price filter is set. |
 | `maxPrice` | integer | no | none | Optional maximum price in INR. Listings with unknown prices are skipped when a price filter is set. |
 | `maxResults` | integer | yes | `1` | Maximum unique listings to save (1-500). Start with one result. |
@@ -99,7 +103,7 @@ To keep the filters selected on a portal, paste the complete results-page URL in
 1. Click **Try for free** / **Run**.
 2. For an exact filtered search, paste one or more portal result URLs in `searchUrls`.
 3. For a simple search, choose `source`, `transactionType`, and one or more cities.
-4. Start with one URL or one city, such as Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad.
+4. Run the prefilled Mumbai example first, or use one URL or one city such as Bengaluru, Pune, Delhi, Chennai, or Hyderabad.
 5. Leave price filters empty and set `maxResults` to `1` for the first run.
 6. Run and export results as CSV, JSON, or Excel. Add sources, cities, or price filters after checking the output.
 

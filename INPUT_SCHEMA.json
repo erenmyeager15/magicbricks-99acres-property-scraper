@@ -1,102 +1,101 @@
 {
-    "title":  "MagicBricks + 99acres Property Scraper Input",
-    "description":  "Collect public Indian property listings. For a low-cost first run, use MagicBricks, sale, Mumbai, one result, no price filters, and the recommended Residential India proxy.",
-    "type":  "object",
-    "schemaVersion":  1,
-    "properties":  {
-                       "searchUrls": {
-                                           "title": "Full search URLs",
-                                           "type": "array",
-                                           "description": "Optional MagicBricks or 99acres search-result URLs. Preserves filters such as locality, BHK, property type, furnishing, budget, and posted-by, then paginates toward maxResults. When supplied, source, transaction type, and cities are derived from the URLs.",
-                                           "editor": "stringList",
-                                           "items": {
-                                                        "type": "string"
-                                                    },
-                                           "maxItems": 10,
-                                           "default": []
-                                       },
-                       "source":  {
-                                      "title":  "Source",
-                                      "type":  "string",
-                                      "description":  "Choose one portal or both. Start with MagicBricks for the smallest first run.",
-                                      "editor":  "select",
-                                      "enum":  [
-                                                   "both",
-                                                   "magicbricks",
-                                                   "99acres"
-                                               ],
-                                      "enumTitles":  [
-                                                         "Both",
-                                                         "MagicBricks",
-                                                         "99acres"
-                                                     ],
-                                      "default":  "magicbricks"
-                                  },
-                       "transactionType":  {
-                                               "title":  "Transaction type",
-                                               "type":  "string",
-                                               "description":  "Scrape property listings for sale or rent.",
-                                               "editor":  "select",
-                                               "enum":  [
-                                                            "sale",
-                                                            "rent"
-                                                        ],
-                                               "enumTitles":  [
-                                                                  "Sale",
-                                                                  "Rent"
-                                                              ],
-                                               "default":  "sale"
-                                           },
-                       "cities":  {
-                                      "title":  "Cities",
-                                      "type":  "array",
-                                      "description":  "Indian city names to search, for example Mumbai, Pune, Bengaluru, Delhi, Chennai, or Hyderabad. Start with one city.",
-                                      "editor":  "stringList",
-                                      "items":  {
-                                                    "type":  "string"
-                                                },
-                                      "minItems":  1,
-                                      "maxItems":  20,
-                                      "default":  [
-                                                      "Mumbai"
-                                                  ]
-                                  },
-                       "minPrice":  {
-                                        "title":  "Minimum price",
-                                        "type":  "integer",
-                                        "description":  "Optional minimum price in INR. Records with unknown prices are skipped when a price filter is used.",
-                                        "editor":  "number",
-                                        "minimum":  0
-                                    },
-                       "maxPrice":  {
-                                        "title":  "Maximum price",
-                                        "type":  "integer",
-                                        "description":  "Optional maximum price in INR. Records with unknown prices are skipped when a price filter is used.",
-                                        "editor":  "number",
-                                        "minimum":  0
-                                    },
-                       "maxResults":  {
-                                          "title":  "Maximum results",
-                                          "type":  "integer",
-                                          "description":  "Maximum number of unique property listings to save across automatically paginated searches. Start with 1, inspect the output, and then scale up.",
-                                          "editor":  "number",
-                                          "minimum":  1,
-                                          "maximum":  500,
-                                          "default":  1
-                                      },
-                       "proxyConfiguration":  {
-                                                  "title":  "Proxy configuration",
-                                                  "type":  "object",
-                                                  "description":  "Residential India proxy is recommended for reliable regional access and consumes platform resources.",
-                                                  "editor":  "proxy",
-                                                  "default":  {
-                                                                  "useApifyProxy":  true,
-                                                                  "apifyProxyGroups":  [
-                                                                                           "RESIDENTIAL"
-                                                                                       ],
-                                                                  "apifyProxyCountry":  "IN"
-                                                              }
-                                              }
-                   },
-    "required":  []
+  "title": "MagicBricks + 99acres Property Scraper Input",
+  "description": "Run the prefilled Mumbai search for one clean property, or paste a filtered MagicBricks/99acres results URL. Residential India proxy is preselected for reliable access.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "source": {
+      "title": "Property portal",
+      "type": "string",
+      "description": "For the quickest first run, keep MagicBricks. Choose Both only when you intentionally want results from two portals.",
+      "editor": "select",
+      "enum": ["magicbricks", "99acres", "both"],
+      "enumTitles": ["MagicBricks (recommended first run)", "99acres", "Both portals"],
+      "default": "magicbricks",
+      "prefill": "magicbricks",
+      "sectionCaption": "Quick start",
+      "sectionDescription": "Ready to run as-is: one Mumbai sale listing from MagicBricks. Change only what you need."
+    },
+    "transactionType": {
+      "title": "Looking for",
+      "type": "string",
+      "description": "Choose sale listings or rental listings.",
+      "editor": "select",
+      "enum": ["sale", "rent"],
+      "enumTitles": ["Properties for sale", "Properties for rent"],
+      "default": "sale",
+      "prefill": "sale"
+    },
+    "cities": {
+      "title": "Indian cities",
+      "type": "array",
+      "description": "Start with one city. Examples: Mumbai, Bengaluru, Pune, Delhi, Chennai, or Hyderabad.",
+      "editor": "stringList",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "maxItems": 20,
+      "default": ["Mumbai"],
+      "prefill": ["Mumbai"],
+      "example": ["Mumbai", "Bengaluru", "Pune"]
+    },
+    "maxResults": {
+      "title": "Maximum properties",
+      "type": "integer",
+      "description": "Start with 1 to verify the output and cost. Increase only when you are ready to collect more properties.",
+      "editor": "number",
+      "minimum": 1,
+      "maximum": 500,
+      "default": 1,
+      "prefill": 1,
+      "unit": "properties"
+    },
+    "searchUrls": {
+      "title": "MagicBricks or 99acres search URLs",
+      "type": "array",
+      "description": "Optional. Paste complete search-results URLs to preserve the portal's locality, BHK, property type, furnishing, budget, and posted-by filters. When supplied, these URLs override the quick-start portal, transaction, and city fields.",
+      "editor": "stringList",
+      "items": { "type": "string" },
+      "maxItems": 10,
+      "default": [],
+      "prefill": [],
+      "example": ["https://www.magicbricks.com/property-for-rent/residential-real-estate?cityName=Pune&bedroom=3&budgetMax=50000"],
+      "sectionCaption": "Exact portal search (optional)",
+      "sectionDescription": "Already filtered results on MagicBricks or 99acres? Paste the full URL here and the Actor will keep those filters while paginating."
+    },
+    "minPrice": {
+      "title": "Minimum price (INR)",
+      "type": "integer",
+      "description": "Optional minimum price. Leave empty for the first run. Listings without a published price are skipped when this filter is active.",
+      "editor": "number",
+      "minimum": 0,
+      "sectionCaption": "Optional price filters",
+      "sectionDescription": "Apply after a successful sample run. Values are Indian rupees, not lakhs or crores."
+    },
+    "maxPrice": {
+      "title": "Maximum price (INR)",
+      "type": "integer",
+      "description": "Optional maximum price. Leave empty for the first run. Listings without a published price are skipped when this filter is active.",
+      "editor": "number",
+      "minimum": 0
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Residential India proxy is preselected because both portals commonly reject datacenter traffic.",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"],
+        "apifyProxyCountry": "IN"
+      },
+      "prefill": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"],
+        "apifyProxyCountry": "IN"
+      },
+      "sectionCaption": "Proxy settings",
+      "sectionDescription": "Keep the recommended setting unless you already have a reliable Indian proxy."
+    }
+  },
+  "required": []
 }
