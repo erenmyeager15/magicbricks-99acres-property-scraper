@@ -135,6 +135,15 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
     const maxResults = Number.isFinite(requestedMaxResults)
         ? Math.min(Math.max(Math.floor(requestedMaxResults), 1), MAX_RESULTS)
         : 1;
+    const monitorStoreName = input?.monitorStoreName?.trim() || null;
+    if (monitorStoreName && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(monitorStoreName)) {
+        throw new Error('monitorStoreName must be 1-63 letters, numbers, underscores or hyphens.');
+    }
+    const priceChangeThresholdPercent = input?.priceChangeThresholdPercent ?? 5;
+    if (typeof priceChangeThresholdPercent !== 'number' || !Number.isFinite(priceChangeThresholdPercent)
+        || priceChangeThresholdPercent < 0 || priceChangeThresholdPercent > 100) {
+        throw new Error('priceChangeThresholdPercent must be a number between 0 and 100.');
+    }
 
     return {
         searchUrls,
@@ -145,5 +154,7 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
         maxPrice,
         maxResults,
         proxyConfiguration: normalizeProxyConfiguration(input?.proxyConfiguration),
+        monitorStoreName,
+        priceChangeThresholdPercent,
     };
 }

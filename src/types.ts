@@ -10,6 +10,8 @@ export interface ActorInput {
     maxPrice?: number;
     maxResults?: number;
     proxyConfiguration?: Record<string, unknown>;
+    monitorStoreName?: string;
+    priceChangeThresholdPercent?: number;
 }
 
 export interface NormalizedInput {
@@ -21,6 +23,8 @@ export interface NormalizedInput {
     maxPrice: number | null;
     maxResults: number;
     proxyConfiguration?: Record<string, unknown>;
+    monitorStoreName: string | null;
+    priceChangeThresholdPercent: number;
 }
 
 export interface SearchUrlDefinition {
@@ -89,4 +93,8 @@ export interface PropertyRecord {
     resultPosition: number;
     description: string | null;
     scrapedAt: string;
+    areaSqft?: number | null;
+    priceBasis?: 'asking_sale' | 'monthly_rent' | 'unknown';
+    comparisonKey?: string | null;
+    qualityFlags?: string[];
 }

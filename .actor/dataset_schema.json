@@ -13,6 +13,9 @@
           "bhk",
           "priceDisplay",
           "pricePerSqft",
+          "priceBasis",
+          "areaSqft",
+          "qualityFlags",
           "area",
           "areaType",
           "propertyType",
@@ -67,6 +70,9 @@
             "label": "Price / sqft",
             "format": "number"
           },
+          "priceBasis": { "label": "Price Basis", "format": "text" },
+          "areaSqft": { "label": "Normalized Sqft", "format": "number" },
+          "qualityFlags": { "label": "Quality Flags", "format": "array" },
           "area": {
             "label": "Area",
             "format": "number"

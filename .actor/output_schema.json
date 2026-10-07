@@ -4,6 +4,23 @@
   "description": "Structured Indian property listing records with sources, transaction types, city queries, property IDs, titles, property types, BHK, prices, area, bedrooms, bathrooms, furnishing, status, project names, localities, addresses, coordinates, image URLs, property URLs, descriptions, and scraped timestamps.",
   "type": "object",
   "properties": {
+    "summary": {
+      "type": "string",
+      "title": "Search coverage summary",
+      "description": "Saved rows, failed pages, source coverage and result/spending caps. A bounded sample is not a full market census.",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/RUN_SUMMARY"
+    },
+    "propertyReport": {
+      "type": "string",
+      "title": "Recurring watchlist report (optional)",
+      "description": "Created only when monitorStoreName is supplied. First-seen listings, comparable price changes, NOT_OBSERVED items and like-for-like sample medians.",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/PROPERTY_REPORT"
+    },
+    "changesCsv": {
+      "type": "string",
+      "title": "Property changes CSV (optional)",
+      "template": "{{links.apiDefaultKeyValueStoreUrl}}/records/PROPERTY_CHANGES.csv"
+    },
     "results": {
       "type": "string",
       "title": "Indian property listing records",

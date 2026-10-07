@@ -78,6 +78,22 @@
       "editor": "number",
       "minimum": 0
     },
+    "monitorStoreName": {
+      "title": "Optional recurring property watchlist",
+      "type": "string",
+      "description": "A stable name for your own saved watchlist. Repeat the same sources, filters and maxResults to compare first-seen listings and price changes. Reports appear in the run output store. Missing listings are NOT_OBSERVED, never assumed sold or removed. Leave empty to avoid history storage.",
+      "editor": "textfield",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"
+    },
+    "priceChangeThresholdPercent": {
+      "title": "Price-change flag threshold (%)",
+      "type": "number",
+      "description": "Flag comparable price changes at or above this percentage in the saved report. All observations remain available; this does not send emails or messages. No extra scraping requests or new billing events.",
+      "editor": "number",
+      "default": 5,
+      "minimum": 0,
+      "maximum": 100
+    },
     "proxyConfiguration": {
       "title": "Proxy configuration",
       "type": "object",

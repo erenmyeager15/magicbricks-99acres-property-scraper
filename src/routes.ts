@@ -3,6 +3,8 @@ import { fetch, ProxyAgent, type Dispatcher } from 'undici';
 import { createHash } from 'node:crypto';
 import { wasPushedRecordSaved } from './billing.js';
 import { normalizeInput } from './input.js';
+import { addPropertyIntelligence, monitorScope, propertyKey, squareFeet } from './property-intelligence.js';
+import { PropertyMonitorError, savePropertyMonitor } from './property-monitor.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
@@ -28,6 +30,10 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     const proxyConfiguration = await Actor.createProxyConfiguration(input.proxyConfiguration);
     const configuredSources = resolveSources(input.source);
     const jobs = buildJobs(input, configuredSources);
+    const observedAt = new Date().toISOString();
+    const savedRecords: PropertyRecord[] = [];
+    const searchFailures = new Map<string, number>();
+    const repeatedPages = new Set<string>();
     const sources = [...new Set(jobs.map((job) => job.source))];
     const seen = new Set<string>();
     const sourceCounts = new Map<string, number>();
@@ -38,6 +44,8 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     let failedPages = 0;
     let spendingLimitReached = false;
     let fatalBillingError: Error | null = null;
+    let earlyStoppedPages = 0;
+    let decodedHtmlBytesRead = 0;
 
     log.info('Starting property scrape', {
         source: input.source,
@@ -60,26 +68,43 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
         });
 
         try {
-            const html = await fetchHtml(job.url, proxyConfiguration);
+            const softCap = Math.ceil(input.maxResults / sources.length);
+            const balanceFirstPass = sources.length > 1 && attemptedSources.size < sources.length;
+            const rowsNeeded = Math.min(input.maxResults - pushed,
+                balanceFirstPass ? softCap - (sourceCounts.get(job.source) ?? 0) : input.maxResults - pushed);
+            const html = await fetchHtml(job.url, proxyConfiguration, {
+                completePrefix: job.source === 'magicbricks'
+                    ? text => completeMagicPrefix(text, job, input, rowsNeeded, seen) : undefined,
+                onChunk: bytes => { decodedHtmlBytesRead += bytes; },
+                onEarlyStop: () => { earlyStoppedPages += 1; },
+            });
             const parsedRecords = job.source === 'magicbricks'
                 ? parseMagicBricks(html, job)
                 : parse99Acres(html, job);
+            const pageState = classifyPropertyPage(html, parsedRecords.length);
+            if (pageState === 'blocked' || pageState === 'unrecognized') {
+                throw new Error(pageState === 'blocked' ? 'Source returned a challenge page' : 'Page format was not recognized; no confirmed empty search');
+            }
             processedPages += 1;
 
             if (parsedRecords.length === 0) {
                 log.warning('No records parsed from page', { source: job.source, city: job.city, page: job.page });
                 exhaustedSearches.add(searchKey);
             }
+            if (parsedRecords.length > 0 && parsedRecords.every(record => seen.has(propertyKey(record)))) {
+                repeatedPages.add(searchKey);
+                exhaustedSearches.add(searchKey);
+                log.warning('Repeated pagination page detected; stopping this search rather than paying for more duplicates.');
+            }
 
             let pushedFromThisJob = 0;
-            const softCap = Math.ceil(input.maxResults / sources.length);
-            const balanceFirstPass = sources.length > 1 && attemptedSources.size < sources.length;
 
-            for (const record of parsedRecords) {
+            for (const parsedRecord of parsedRecords) {
+                const record = addPropertyIntelligence(parsedRecord);
                 if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
                 if (balanceFirstPass && (sourceCounts.get(job.source) ?? 0) >= softCap) break;
 
-                const dedupeKey = record.propertyId || record.propertyUrl;
+                const dedupeKey = propertyKey(record);
                 if (seen.has(dedupeKey)) continue;
                 if (!passesPriceFilter(record, input)) continue;
 
@@ -92,6 +117,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
                         pushed += 1;
                         pushedFromThisJob += 1;
                         sourceCounts.set(job.source, (sourceCounts.get(job.source) ?? 0) + 1);
+                        savedRecords.push(record);
                     }
 
                     if (chargeResult.eventChargeLimitReached) {
@@ -123,6 +149,8 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
         } catch (error) {
             attemptedSources.add(job.source);
             failedPages += 1;
+            searchFailures.set(searchKey, (searchFailures.get(searchKey) ?? 0) + 1);
+            if (shouldStopFailedSearch(searchFailures.get(searchKey)!)) exhaustedSearches.add(searchKey);
             log.warning(`Skipping page after retries: ${(error as Error).message}`, {
                 source: job.source,
                 city: job.city,
@@ -143,6 +171,27 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     }
 
     if (fatalBillingError) throw fatalBillingError;
+    const coverage = {
+        savedListings: pushed, processedPages, failedPages, spendingLimitReached,
+        resultLimitReached: pushed >= input.maxResults,
+        requestedSources: sources, sourcesWithSavedListings: [...sourceCounts.keys()],
+        failedSearches: searchFailures.size, repeatedSearchPages: repeatedPages.size,
+        earlyStoppedPages, decodedHtmlBytesRead,
+        boundedSample: true,
+    };
+    await Actor.setValue('RUN_SUMMARY', coverage);
+    if (input.monitorStoreName && processedPages > 0) {
+        try {
+            await savePropertyMonitor(input.monitorStoreName, savedRecords,
+                monitorScope(input, jobs.map(job => job.searchKey)), observedAt,
+                input.priceChangeThresholdPercent, coverage);
+        } catch (error) {
+            // Keep core results, but never label a failed persistent comparison as a successful baseline.
+            await Actor.setValue('PROPERTY_REPORT', { historyCommitted: error instanceof PropertyMonitorError ? error.historyCommitted : false, coverage,
+                error: (error as Error).message });
+            throw new Error(`Property data was saved, but the requested monitor update failed: ${(error as Error).message}`);
+        }
+    }
 
     if (pushed === 0) {
         if (shouldFailEmptyRun(processedPages)) {
@@ -166,6 +215,18 @@ export function shouldFailEmptyRun(processedPages: number): boolean {
     return processedPages === 0;
 }
 
+export function shouldStopFailedSearch(failedPages: number): boolean {
+    return failedPages >= 2;
+}
+
+export function classifyPropertyPage(html: string, parsedCount: number): 'listings' | 'empty' | 'blocked' | 'unrecognized' {
+    if (parsedCount > 0) return 'listings';
+    if (looksBlocked(html)) return 'blocked';
+    const text = stripHtml(html);
+    if (/no (?:matching )?(?:properties|listings|results) (?:were )?(?:found|available)|couldn['’]?t find any propert|0 properties found/i.test(text)) return 'empty';
+    return 'unrecognized';
+}
+
 function resolveSources(source: PropertySource): Array<Exclude<PropertySource, 'both'>> {
     if (source === 'magicbricks') return ['magicbricks'];
     if (source === '99acres') return ['99acres'];
@@ -178,9 +239,9 @@ export function buildJobs(input: NormalizedInput, sources: Array<Exclude<Propert
     if (input.searchUrls.length > 0) {
         const customJobs: ScrapeJob[] = [];
 
-        for (const searchUrl of input.searchUrls) {
-            const searchKey = `${searchUrl.source}:${searchUrl.url}`;
-            for (let page = 1; page <= requestedPages; page += 1) {
+        for (let page = 1; page <= requestedPages; page += 1) {
+            for (const searchUrl of input.searchUrls) {
+                const searchKey = `${searchUrl.source}:${searchUrl.url}`;
                 customJobs.push({
                     ...searchUrl,
                     page,
@@ -310,9 +371,16 @@ type BoundedResponse = {
     } | null;
 };
 
+type ResponseReadOptions = {
+    completePrefix?: (html: string) => string | null;
+    onChunk?: (bytes: number) => void;
+    onEarlyStop?: () => void;
+};
+
 export async function readBoundedResponseText(
     response: BoundedResponse,
     maxBytes = MAX_HTML_BYTES,
+    options: ResponseReadOptions = {},
 ): Promise<string> {
     const contentLengthHeader = response.headers.get('content-length');
     const contentLength = contentLengthHeader === null ? null : Number(contentLengthHeader);
@@ -336,12 +404,19 @@ export async function readBoundedResponseText(
             if (!value) continue;
 
             bytesRead += value.byteLength;
+            options.onChunk?.(value.byteLength);
             if (bytesRead > maxBytes) {
                 await reader.cancel();
                 throw new NonRetryableRequestError(`HTML response exceeds ${maxBytes} byte limit`);
             }
 
             text += decoder.decode(value, { stream: true });
+            const completePrefix = options.completePrefix?.(text);
+            if (completePrefix) {
+                await reader.cancel('Requested complete property cards have been captured');
+                options.onEarlyStop?.();
+                return completePrefix;
+            }
         }
 
         return text + decoder.decode();
@@ -350,7 +425,7 @@ export async function readBoundedResponseText(
     }
 }
 
-async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration): Promise<string> {
+async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration, options: ResponseReadOptions = {}): Promise<string> {
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
@@ -374,7 +449,7 @@ async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration): P
                 throw error;
             }
 
-            const html = await readBoundedResponseText(response);
+            const html = await readBoundedResponseText(response, MAX_HTML_BYTES, options);
             if (looksBlocked(html)) {
                 throw new Error('Page appears blocked or challenged');
             }
@@ -394,13 +469,7 @@ async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration): P
 
 function looksBlocked(html: string): boolean {
     const lower = html.toLowerCase();
-    const hasListings = lower.includes('mb-srp__card')
-        || lower.includes('application/ld+json')
-        || lower.includes('itemlistelement')
-        || lower.includes('property-card');
-
-    if (hasListings) return false;
-
+    if (/mb-srp__card|property-card|-spid-\d+/.test(lower)) return false;
     return lower.includes('captcha')
         || lower.includes('access denied')
         || lower.includes('unusual traffic')
@@ -408,17 +477,28 @@ function looksBlocked(html: string): boolean {
         || lower.includes('cloudflare');
 }
 
-function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[] {
+export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[] {
     const listItems = extractMagicListItems(html);
     const chunks = extractMagicCardChunks(html);
     const records: PropertyRecord[] = [];
-    const maxItems = Math.max(listItems.length, chunks.length);
+    const usedListItems = new Set<number>();
+    const pairs = chunks.map(chunk => {
+        const cardUrl = absoluteUrl(extractMagicUrl(chunk), 'https://www.magicbricks.com');
+        const titleMatches = cardUrl ? [] : listItems.map((item, index) => ({ item, index }))
+            .filter(({ item }) => item.name && cleanText(stripHtml(chunk)).includes(item.name));
+        const listIndex = cardUrl ? listItems.findIndex(item => magicUrlKey(item.url) === magicUrlKey(cardUrl))
+            : titleMatches.length === 1 ? titleMatches[0].index : -1;
+        if (listIndex >= 0) usedListItems.add(listIndex);
+        return { chunk, listItem: listIndex >= 0 ? listItems[listIndex] : undefined, cardUrl };
+    });
+    for (const [index, listItem] of listItems.entries()) {
+        if (!usedListItems.has(index)) pairs.push({ chunk: '', listItem, cardUrl: null });
+    }
 
-    for (let index = 0; index < maxItems; index += 1) {
-        const listItem = listItems[index];
-        const chunk = chunks[index] ?? '';
+    for (const [index, pair] of pairs.entries()) {
+        const { listItem, chunk, cardUrl } = pair;
         const text = cleanText(stripHtml(chunk));
-        const propertyUrl = absoluteUrl(listItem?.url ?? extractMagicUrl(chunk), 'https://www.magicbricks.com');
+        const propertyUrl = absoluteUrl(cardUrl ?? listItem?.url ?? null, 'https://www.magicbricks.com');
 
         if (!propertyUrl) continue;
 
@@ -517,8 +597,9 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
         const priceDisplay = state.priceDisplay ?? extractPriceDisplay(priceText);
         const stateArea = state.area ?? { value: null, unit: null };
         const price = state.price ?? parseIndianMoney(priceDisplay);
-        const areaValue = floorSize.value ?? stateArea.value ?? descriptionArea.value;
-        const areaUnit = floorSize.unit ?? stateArea.unit ?? descriptionArea.unit;
+        const areaValue = stateArea.value ?? floorSize.value ?? descriptionArea.value;
+        const areaUnit = stateArea.value !== null ? stateArea.unit
+            : floorSize.value !== null ? floorSize.unit : descriptionArea.unit;
         const details = extractListingDetails(description);
         const imageUrls = uniqueStrings([
             state.imageUrl,
@@ -540,7 +621,7 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
             depositDisplay: extractDepositDisplay(priceText),
             area: areaValue,
             areaUnit,
-            areaType: state.areaType ?? (floorSize.value ? 'Built-up Area' : extractAreaType(description)),
+            areaType: state.areaType ?? extractAreaType(description),
             bedrooms: bhk ?? state.bhk ?? null,
             bathrooms: finiteNumber(item.numberOfBathroomsTotal) ?? state.bathrooms ?? null,
             balconies: null,
@@ -592,21 +673,9 @@ export function calculatePricePerSqft(
     area: number | null,
     areaUnit: string | null,
 ): number | null {
-    if (price === null || area === null || area <= 0 || !areaUnit) return null;
-
-    const normalizedUnit = areaUnit.toLowerCase().replace(/[.\s_-]+/g, '');
-    let squareFeet: number;
-    if (['sqft', 'squarefeet', 'squarefoot'].includes(normalizedUnit)) {
-        squareFeet = area;
-    } else if (['sqm', 'sqmeter', 'sqmeters', 'squaremeter', 'squaremeters', 'm2', 'm²'].includes(normalizedUnit)) {
-        squareFeet = area * 10.7639;
-    } else if (['sqyd', 'squareyard', 'squareyards'].includes(normalizedUnit)) {
-        squareFeet = area * 9;
-    } else {
-        return null;
-    }
-
-    return Math.round(price / squareFeet);
+    const normalizedArea = squareFeet(area, areaUnit);
+    return price !== null && Number.isFinite(price) && price > 0 && normalizedArea
+        ? Math.round(price / normalizedArea) : null;
 }
 
 function extractMagicListItems(html: string): Array<{ name: string | null; url: string | null }> {
@@ -628,21 +697,108 @@ function extractMagicListItems(html: string): Array<{ name: string | null; url: 
 }
 
 function extractMagicCardChunks(html: string): string[] {
-    const starts: number[] = [];
-    const re = /<div[^>]+class=["'][^"']*\bmb-srp__card\b(?![-_])[^"']*["'][^>]*>/gi;
-    let match: RegExpExecArray | null;
-
-    while ((match = re.exec(html)) !== null) {
-        starts.push(match.index);
-    }
-
-    return starts.map((start, index) => html.slice(start, starts[index + 1] ?? html.length));
+    return completeMagicCards(html).map(card => html.slice(card.start, card.end));
 }
 
 function extractMagicUrl(chunk: string): string | null {
-    const href = chunk.match(/href=["']([^"']*magicbricks\.com[^"']+)["']/i)?.[1]
-        ?? chunk.match(/href=["']([^"']*propertyDetails[^"']+)["']/i)?.[1];
-    return href ? decodeHtml(href.replace(/\\\//g, '/')) : null;
+    for (const match of chunk.matchAll(/href=["']([^"']+)["']/gi)) {
+        const href = decodeHtml(match[1].replace(/\\\//g, '/'));
+        const absolute = absoluteUrl(href, 'https://www.magicbricks.com');
+        if (!absolute) continue;
+        try {
+            const url = new URL(absolute);
+            if ((url.hostname === 'magicbricks.com' || url.hostname.endsWith('.magicbricks.com'))
+                && (/propertyDetails/i.test(url.pathname) || /\.htm$/i.test(url.pathname))) return absolute;
+        } catch { /* Ignore malformed links; never attach another listing's price by position. */ }
+    }
+    return null;
+}
+
+function magicUrlKey(url: string | null): string | null {
+    if (!url) return null;
+    try {
+        const parsed = new URL(decodeHtml(url), 'https://www.magicbricks.com');
+        return parsed.pathname + (parsed.searchParams.has('id') ? `?id=${parsed.searchParams.get('id')}` : '');
+    } catch { return null; }
+}
+
+// Count balanced card containers, excluding comments and raw script/style strings. A partial card
+// or a footer after the card is not property data. No DOM parser or browser is needed for this path.
+export function completeMagicCards(html: string): Array<{ start: number; end: number }> {
+    const cards: Array<{ start: number; end: number }> = [];
+    const tokens = /<!--|<\/?([a-z][\w:-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi;
+    let start = -1;
+    let depth = 0;
+    let match: RegExpExecArray | null;
+    while ((match = tokens.exec(html)) !== null) {
+        if (match[0] === '<!--') {
+            const end = html.indexOf('-->', tokens.lastIndex);
+            if (end < 0) break;
+            tokens.lastIndex = end + 3;
+            continue;
+        }
+        const tag = match[1].toLowerCase();
+        const closing = /^<\//.test(match[0]);
+        if (!closing && (tag === 'script' || tag === 'style')) {
+            const endTag = new RegExp(`</${tag}\\s*>`, 'gi');
+            endTag.lastIndex = tokens.lastIndex;
+            const end = endTag.exec(html);
+            if (!end) break;
+            tokens.lastIndex = endTag.lastIndex;
+            continue;
+        }
+        if (tag !== 'div') continue;
+        if (!closing) {
+            const attributes = [...match[0].matchAll(/\s([^\s=/>]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g)];
+            const classAttribute = attributes.find(attribute => attribute[1].toLowerCase() === 'class');
+            const className = classAttribute ? classAttribute[2] ?? classAttribute[3] ?? classAttribute[4] : '';
+            if (start < 0 && /(?:^|\s)mb-srp__card(?:\s|$)/.test(className)) start = match.index;
+            if (start >= 0) depth += 1;
+        } else if (start >= 0) {
+            depth -= 1;
+            if (depth === 0) {
+                cards.push({ start, end: tokens.lastIndex });
+                start = -1;
+            }
+        }
+    }
+    return cards;
+}
+
+export function completeMagicPrefix(
+    html: string, job: ScrapeJob, input: NormalizedInput, required: number, seen: ReadonlySet<string>,
+): string | null {
+    if (job.source !== 'magicbricks' || required < 1) return null;
+    const cards = completeMagicCards(html);
+    if (cards.length < required) return null;
+    // Stop only when a complete ItemList is already before the cards. If it is late or absent,
+    // keep reading normally, including 99acres inline state. This preserves source field parity.
+    const listItems = extractMagicListItems(html.slice(0, cards[0].start));
+    if (!listItems.length) return null;
+    const parsedRows = parseMagicBricks(html.slice(0, cards[cards.length - 1].end), job);
+    const rowByUrl = new Map<string | null, PropertyRecord>();
+    for (const row of parsedRows) {
+        const url = magicUrlKey(row.propertyUrl);
+        if (!rowByUrl.has(url)) rowByUrl.set(url, row);
+    }
+    const matched = new Set<string>();
+    let eligible = 0;
+    for (const card of cards) {
+        const prefix = html.slice(0, card.end);
+        const cardUrl = extractMagicUrl(html.slice(card.start, card.end));
+        const listItem = listItems.find(item => magicUrlKey(item.url) === magicUrlKey(cardUrl));
+        if (!cardUrl || !listItem?.name) return null;
+        const record = rowByUrl.get(magicUrlKey(cardUrl));
+        if (!record) return null;
+        const key = propertyKey(record);
+        if (!seen.has(key) && !matched.has(key) && record.title && record.price !== null && record.price > 0
+            && record.area !== null && record.area > 0 && record.areaUnit && passesPriceFilter(record, input)) {
+            matched.add(key);
+            eligible += 1;
+        }
+        if (eligible >= required) return prefix;
+    }
+    return null;
 }
 
 function extractMagicTitle(text: string, city: string): string | null {
@@ -1049,18 +1205,20 @@ function extractRawWindowNearUrl(html: string, url: string, radius: number): str
 function extractFloorSize(value: unknown): { value: number | null; unit: string | null } {
     if (isObject(value)) {
         const objectValue = finiteNumber(value.value) ?? finiteNumber(value.size);
-        const unit = cleanText(asString(value.unitText ?? value.unitCode)) || 'sqft';
+        const unit = cleanText(asString(value.unitText ?? value.unitCode)) || null;
         return { value: objectValue, unit: objectValue === null ? null : unit };
     }
 
     return extractArea(asString(value));
 }
 
-function extractArea(text: string | null): { value: number | null; unit: string | null } {
+export function extractArea(text: string | null): { value: number | null; unit: string | null } {
     if (!text) return { value: null, unit: null };
-    const match = text.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:sq\.?\s*ft|sqft|sq-ft|square\s*feet)/i);
+    const match = text.match(/(\d[\d,]*(?:\.\d+)?)\s*(sq\.?\s*ft|sqft|sq-ft|square\s*feet|sq\.?\s*m(?:eters?)?|sqm|m[²2]|square\s*meters?|sq\.?\s*y(?:ards?|d)|sqyd|square\s*yards?)/i);
     if (!match) return { value: null, unit: null };
-    return { value: toNumber(match[1]), unit: 'sqft' };
+    const rawUnit = match[2].toLowerCase();
+    const unit = /y/.test(rawUnit) ? 'sqyd' : /m/.test(rawUnit) ? 'sqm' : 'sqft';
+    return { value: toNumber(match[1]), unit };
 }
 
 function extractAreaType(text: string): string | null {
@@ -1097,29 +1255,35 @@ function extractPropertyType(text: string): string | null {
     return found === 'Flat' ? 'Apartment' : found;
 }
 
-function extractPriceDisplay(text: string | null): string | null {
+export function extractPriceDisplay(text: string | null): string | null {
     if (!text) return null;
     const candidates = [...text.matchAll(/(?:\u20b9|Rs\.?|INR)\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?(?:\s*-\s*(?:\u20b9|Rs\.?|INR)?\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?)?(?:\s*(?:\/\s*month|monthly))?/gi)]
         .map((match) => ({
             value: cleanText(match[0]),
-            context: text.slice(match.index ?? 0, (match.index ?? 0) + 80),
+            before: text.slice(Math.max(0, (match.index ?? 0) - 60), match.index ?? 0),
+            context: text.slice((match.index ?? 0) + match[0].length, (match.index ?? 0) + match[0].length + 40),
         }))
         .filter(({ value }) => Boolean(value));
 
     const matches = candidates
-        .filter(({ value, context }) => isUsefulPriceCandidate(value, context))
+        .filter(({ value, before, context }) => !isAncillaryFee(before) && isUsefulPriceCandidate(value, context))
         .map(({ value }) => value);
 
-    if (matches.length > 0) return matches[matches.length - 1];
+    if (matches.length > 0) return matches[0];
 
-    const rentMatch = text.match(/\b[\d,]{4,}\s*(?:monthly|per\s+month|\/\s*month)\b/i);
+    const rentMatch = [...text.matchAll(/\b[\d,]{4,}\s*(?:monthly|per\s+month|\/\s*month)\b/gi)]
+        .find(match => !isAncillaryFee(text.slice(Math.max(0, (match.index ?? 0) - 60), match.index ?? 0)));
     return rentMatch ? cleanText(rentMatch[0]) : null;
+}
+
+function isAncillaryFee(before: string): boolean {
+    return /(?:maintenance(?:\s+charges?)?|(?:security\s+)?deposit|emi|booking\s+amount)\s*[:\-]?\s*(?:(?:INR|Rs\.?|\u20b9)\s*)?$/i.test(before);
 }
 
 function isUsefulPriceCandidate(value: string, context: string): boolean {
     if (/\b(?:Lac|Lakh|Cr|Crore)\b/i.test(value)) return true;
     if (/(?:\/\s*month|monthly)/i.test(value)) return true;
-    if (/(?:\/\s*sqft|per\s+sqft|sq\.?\s*ft|emi)/i.test(context)) return false;
+    if (/^\s*(?:\/\s*sqft|per\s+sqft|sq\.?\s*ft|emi\b)/i.test(context)) return false;
     return (parseIndianMoney(value) ?? 0) >= 100000;
 }
 

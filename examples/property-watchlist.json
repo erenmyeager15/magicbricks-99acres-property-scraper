@@ -1,0 +1,13 @@
+{
+  "source": "both",
+  "transactionType": "sale",
+  "cities": ["Mumbai"],
+  "maxResults": 25,
+  "monitorStoreName": "mumbai-sale-watch",
+  "priceChangeThresholdPercent": 5,
+  "proxyConfiguration": {
+    "useApifyProxy": true,
+    "apifyProxyGroups": ["RESIDENTIAL"],
+    "apifyProxyCountry": "IN"
+  }
+}
