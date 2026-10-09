@@ -11,7 +11,7 @@
     "test": "npm run build && node --test dist/input.test.js dist/billing.test.js dist/routes.test.js dist/property-intelligence.test.js dist/property-transfer.test.js"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "apify": "^3.4.5",

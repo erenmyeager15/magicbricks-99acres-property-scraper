@@ -4,6 +4,8 @@ import { completeMagicCards, completeMagicPrefix, extractPriceDisplay, parseMagi
 import { normalizeInput } from './input.js';
 import { propertyKey } from './property-intelligence.js';
 import type { ScrapeJob } from './types.js';
+import { fetchHtml, classifyPropertyPage } from './routes.js';
+import { Response, type fetch } from 'undici';
 
 const url = (id: number) => `https://www.magicbricks.com/propertyDetails/2-BHK-flat-for-Sale-in-Mumbai&id=${id}.htm`;
 const title = (id: number) => `2 BHK Flat in Project ${id}, Andheri, Mumbai`;
@@ -20,6 +22,25 @@ function card(id: number, price = id === 1 ? '85 Lakh' : '1.5 Crore', area = '10
 function comparable(row: ReturnType<typeof parseMagicBricks>[number]) {
     return { ...row, scrapedAt: null };
 }
+
+test('unknown response recovery preserves complete priced property output', async () => {
+    let calls = 0;
+    const full = ld([1]) + card(1);
+    let rows: ReturnType<typeof parseMagicBricks> = [];
+    await fetchHtml(job.url, undefined, {
+        validate: html => {
+            rows = parseMagicBricks(html, job);
+            return classifyPropertyPage(html, rows.length);
+        },
+    }, {
+        fetch: (async () => new Response(++calls === 1 ? '<html>Temporary response</html>' : full)) as typeof fetch,
+        delay: async () => {},
+    });
+    assert.equal(calls, 2);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].price, 8_500_000);
+    assert.deepEqual(comparable(rows[0]), comparable(parseMagicBricks(full, job)[0]));
+});
 
 test('identity matching pairs reordered JSON-LD with the correct card prices', () => {
     const rows = parseMagicBricks(ld([2, 1]) + card(1) + card(2), job);

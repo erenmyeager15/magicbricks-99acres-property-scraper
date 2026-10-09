@@ -4,7 +4,7 @@ Scrape public Indian real-estate listings from MagicBricks and 99acres, with pri
 
 Add an optional recurring watchlist to compare asking prices on repeat runs. Each row carries area-unit normalization and data-quality flags; a separate report distinguishes comparable price changes from missing or changed data. It does not guess that a listing has been sold or removed.
 
-Built with Node.js 20, TypeScript, and the Apify SDK using HTTP requests over the configured proxy. The Actor reads each portal's structured listing data (JSON-LD and embedded page state); no browser is launched.
+Built with Node.js 24, TypeScript, and the Apify SDK using HTTP requests over the configured proxy. The Actor reads each portal's structured listing data (JSON-LD and embedded page state); no browser is launched.
 
 ## Quick Start
 
@@ -55,7 +55,7 @@ This independent Actor does not extract phone numbers, emails, private contact d
 
 Property records are charged only when delivered to the dataset. The `apify-actor-start` event is charged according to Actor memory, with at least one startup event.
 
-This Actor uses Apify Pay Per Event pricing, with platform usage included. Failed, blocked, or empty pages do not create `property-scraped` charges; the startup event can still apply. Confirmed empty searches can finish with an empty dataset. An unrecognized page is a failure, not proof of no listings. Partial source failures are disclosed in `RUN_SUMMARY`; an all-failed scrape, billing failure or requested monitor-update failure fails the run.
+This Actor uses Apify Pay Per Event pricing, with platform usage included. Failed, blocked, or empty pages do not create `property-scraped` charges; the startup event can still apply. Confirmed empty searches can finish with an empty dataset. Source maintenance and unrecognized pages are retried within a two-attempt limit, then reported as failures rather than empty searches. Partial source failures are disclosed in `RUN_SUMMARY`; an all-failed scrape, billing failure or requested monitor-update failure fails the run.
 
 | Event name | Price per event | 1,000 results | 10,000 results |
 | --- | ---: | ---: | ---: |

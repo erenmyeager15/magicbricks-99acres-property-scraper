@@ -72,19 +72,17 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             const balanceFirstPass = sources.length > 1 && attemptedSources.size < sources.length;
             const rowsNeeded = Math.min(input.maxResults - pushed,
                 balanceFirstPass ? softCap - (sourceCounts.get(job.source) ?? 0) : input.maxResults - pushed);
-            const html = await fetchHtml(job.url, proxyConfiguration, {
+            let parsedRecords: PropertyRecord[] = [];
+            await fetchHtml(job.url, proxyConfiguration, {
+                validate: html => {
+                    parsedRecords = job.source === 'magicbricks' ? parseMagicBricks(html, job) : parse99Acres(html, job);
+                    return classifyPropertyPage(html, parsedRecords.length);
+                },
                 completePrefix: job.source === 'magicbricks'
                     ? text => completeMagicPrefix(text, job, input, rowsNeeded, seen) : undefined,
                 onChunk: bytes => { decodedHtmlBytesRead += bytes; },
                 onEarlyStop: () => { earlyStoppedPages += 1; },
             });
-            const parsedRecords = job.source === 'magicbricks'
-                ? parseMagicBricks(html, job)
-                : parse99Acres(html, job);
-            const pageState = classifyPropertyPage(html, parsedRecords.length);
-            if (pageState === 'blocked' || pageState === 'unrecognized') {
-                throw new Error(pageState === 'blocked' ? 'Source returned a challenge page' : 'Page format was not recognized; no confirmed empty search');
-            }
             processedPages += 1;
 
             if (parsedRecords.length === 0) {
@@ -151,7 +149,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             failedPages += 1;
             searchFailures.set(searchKey, (searchFailures.get(searchKey) ?? 0) + 1);
             if (shouldStopFailedSearch(searchFailures.get(searchKey)!)) exhaustedSearches.add(searchKey);
-            log.warning(`Skipping page after retries: ${(error as Error).message}`, {
+            log.warning(`Skipping failed page: ${(error as Error).message}`, {
                 source: job.source,
                 city: job.city,
                 page: job.page,
@@ -195,7 +193,7 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
 
     if (pushed === 0) {
         if (shouldFailEmptyRun(processedPages)) {
-            throw new Error('All property pages failed after retries. Try Residential India proxy or run again later.');
+            throw new Error('All property pages failed. See the response diagnostics in the log; no listings were saved.');
         }
 
         await Actor.setStatusMessage('Search completed successfully, but no listings matched the supplied filters.');
@@ -219,10 +217,11 @@ export function shouldStopFailedSearch(failedPages: number): boolean {
     return failedPages >= 2;
 }
 
-export function classifyPropertyPage(html: string, parsedCount: number): 'listings' | 'empty' | 'blocked' | 'unrecognized' {
+export function classifyPropertyPage(html: string, parsedCount: number): 'listings' | 'empty' | 'blocked' | 'maintenance' | 'unrecognized' {
     if (parsedCount > 0) return 'listings';
     if (looksBlocked(html)) return 'blocked';
     const text = stripHtml(html);
+    if (/(?:we['’]?re|we are|site is|website is)\s+(?:down\s+)?(?:for|under)\s+maintenance/i.test(text)) return 'maintenance';
     if (/no (?:matching )?(?:properties|listings|results) (?:were )?(?:found|available)|couldn['’]?t find any propert|0 properties found/i.test(text)) return 'empty';
     return 'unrecognized';
 }
@@ -425,7 +424,13 @@ export async function readBoundedResponseText(
     }
 }
 
-async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration, options: ResponseReadOptions = {}): Promise<string> {
+type FetchHtmlOptions = ResponseReadOptions & {
+    validate?: (html: string) => ReturnType<typeof classifyPropertyPage>;
+};
+
+// Injectable transport keeps recovery tests offline and exercises the production retry loop.
+export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullable<ProxyConfiguration>, 'newUrl'> | undefined,
+    options: FetchHtmlOptions = {}, transport = { fetch, delay }): Promise<string> {
     let lastError: Error | null = null;
 
     for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
@@ -434,7 +439,7 @@ async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration, op
         try {
             const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
             dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
-            const response = await fetch(url, {
+            const response = await transport.fetch(url, {
                 headers: REQUEST_HEADERS,
                 dispatcher,
                 signal: createRequestSignal(),
@@ -450,18 +455,26 @@ async function fetchHtml(url: string, proxyConfiguration: ProxyConfiguration, op
             }
 
             const html = await readBoundedResponseText(response, MAX_HTML_BYTES, options);
-            if (looksBlocked(html)) {
-                throw new Error('Page appears blocked or challenged');
+            const state = options.validate?.(html) ?? (looksBlocked(html) ? 'blocked' : 'listings');
+            if (state === 'blocked' || state === 'unrecognized' || state === 'maintenance') {
+                // Do not retain source HTML, query strings, cookies or proxy credentials.
+                log.warning('Property response rejected', {
+                    attempt, maxAttempts: MAX_REQUEST_ATTEMPTS, status: response.status,
+                    decodedBytes: Buffer.byteLength(html), classification: state,
+                    redirected: response.redirected,
+                    ...propertyResponseEvidence(html),
+                });
+                throw new Error(`${state === 'maintenance' ? 'Source returned a maintenance page instead of property listings' : `Property response ${state}`} (HTTP ${response.status}, ${Buffer.byteLength(html)} decoded bytes, attempt ${attempt}/${MAX_REQUEST_ATTEMPTS})`);
             }
 
             return html;
         } catch (error) {
             lastError = error instanceof Error ? error : new Error(String(error));
             if (error instanceof NonRetryableRequestError) break;
-            if (attempt < MAX_REQUEST_ATTEMPTS) await delay(1000 * attempt + randomInt(250, 900));
         } finally {
             await dispatcher?.close();
         }
+        if (attempt < MAX_REQUEST_ATTEMPTS) await transport.delay(1000 * attempt + randomInt(250, 900));
     }
 
     throw lastError ?? new Error('Request failed');
@@ -475,6 +488,26 @@ function looksBlocked(html: string): boolean {
         || lower.includes('unusual traffic')
         || lower.includes('enable cookies')
         || lower.includes('cloudflare');
+}
+
+// Fixed labels and a digest identify replacement pages without retaining source text.
+export function propertyResponseEvidence(html: string) {
+    const signals = {
+        maintenance: /(?:we['’]?re|we are|site is|website is)\s+(?:down\s+)?(?:for|under)\s+maintenance/i.test(stripHtml(html)),
+        javascriptRequired: /enable javascript|javascript (?:is )?(?:required|disabled)|please turn javascript on/i.test(html),
+        browserVerification: /verify (?:that )?you are human|checking your browser|browser verification|verifying your browser/i.test(html),
+        accessDenied: /access denied|request rejected|request blocked|permission denied/i.test(html),
+        rateLimited: /too many requests|rate limit/i.test(html),
+        captcha: /captcha/i.test(html),
+        incidentReference: /incident (?:id|number)|reference\s*#|support id/i.test(html),
+    };
+    return {
+        responseSha256: createHash('sha256').update(html).digest('hex'),
+        responseSignals: Object.entries(signals).filter(([, present]) => present).map(([name]) => name),
+        scriptCount: (html.match(/<script\b/gi) ?? []).length,
+        iframeCount: (html.match(/<iframe\b/gi) ?? []).length,
+        hasHtmlDocument: /<!doctype html|<html\b/i.test(html),
+    };
 }
 
 export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[] {

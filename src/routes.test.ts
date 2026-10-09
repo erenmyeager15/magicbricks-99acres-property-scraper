@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     buildJobs,
+    fetchHtml,
+    classifyPropertyPage,
+    propertyResponseEvidence,
     calculatePageLimit,
     calculatePricePerSqft,
     calculate99AcresPageLimit,
@@ -19,6 +22,83 @@ import {
     shouldFailEmptyRun,
 } from './routes.js';
 import { normalizeInput } from './input.js';
+import { Response, type fetch } from 'undici';
+
+test('replacement-page evidence uses fixed labels without leaking response contents', () => {
+    const html = '<html><script>const token="private-value"</script><p>Enable JavaScript. Access denied. Reference #12345 user@example.com</p></html>';
+    const evidence = propertyResponseEvidence(html);
+    assert.deepEqual(evidence.responseSignals, ['javascriptRequired', 'accessDenied', 'incidentReference']);
+    assert.equal(evidence.scriptCount, 1);
+    assert.match(evidence.responseSha256, /^[a-f0-9]{64}$/);
+    assert.doesNotMatch(JSON.stringify(evidence), /private-value|example.com|12345/);
+    assert.notEqual(evidence.responseSha256, propertyResponseEvidence(html + 'changed').responseSha256);
+});
+
+function recoveryTransport(responses: Response[]) {
+    let calls = 0;
+    let waits = 0;
+    return {
+        transport: {
+            fetch: (async () => {
+                const response = responses[calls++];
+                assert.ok(response, 'request budget exceeded');
+                return response;
+            }) as typeof fetch,
+            delay: async () => { waits += 1; },
+        },
+        counts: () => ({ calls, waits }),
+    };
+}
+
+test('unknown successful HTML retries with a new proxy connection and recovers', async () => {
+    const stub = recoveryTransport([new Response('<html>Temporary page</html>'), new Response('No properties found')]);
+    let proxyCalls = 0;
+    const result = await fetchHtml('https://www.magicbricks.com/', {
+        newUrl: async () => { proxyCalls += 1; return 'http://127.0.0.1:9999'; },
+    }, { validate: html => classifyPropertyPage(html, 0) }, stub.transport);
+    assert.equal(result, 'No properties found');
+    assert.equal(proxyCalls, 2);
+    assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
+});
+
+test('repeated unknown pages fail after two attempts without inventing an empty search', async () => {
+    const stub = recoveryTransport([new Response('Temporary page'), new Response('Temporary page')]);
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined,
+        { validate: html => classifyPropertyPage(html, 0) }, stub.transport), /unrecognized.*attempt 2\/2/);
+    assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
+});
+
+test('confirmed empty pages succeed immediately without recovery cost', async () => {
+    const stub = recoveryTransport([new Response('No matching properties found')]);
+    await fetchHtml('https://www.magicbricks.com/', undefined,
+        { validate: html => classifyPropertyPage(html, 0) }, stub.transport);
+    assert.deepEqual(stub.counts(), { calls: 1, waits: 0 });
+});
+
+test('source maintenance is explicit, bounded, and never treated as an empty search', async () => {
+    const html = "<html><h1>We'll be back soon!</h1><p>Sorry, we're down for maintenance.</p></html>";
+    assert.equal(classifyPropertyPage(html, 0), 'maintenance');
+    assert.deepEqual(propertyResponseEvidence(html).responseSignals, ['maintenance']);
+    const stub = recoveryTransport([new Response(html), new Response(html)]);
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined,
+        { validate: text => classifyPropertyPage(text, 0) }, stub.transport), /Source returned a maintenance page.*attempt 2\/2/);
+    assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
+    assert.equal(classifyPropertyPage('<p>Maintenance charges INR 2000</p>', 0), 'unrecognized');
+    assert.equal(classifyPropertyPage(html, 1), 'listings');
+});
+
+test('permanent HTTP failures do not use the second attempt', async () => {
+    const stub = recoveryTransport([new Response('Missing', { status: 404 })]);
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined, {}, stub.transport), /HTTP 404/);
+    assert.deepEqual(stub.counts(), { calls: 1, waits: 0 });
+});
+
+test('HTTP and content failures share one two-attempt budget', async () => {
+    const stub = recoveryTransport([new Response('Unavailable', { status: 503 }), new Response('Temporary page')]);
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined,
+        { validate: html => classifyPropertyPage(html, 0) }, stub.transport), /unrecognized.*attempt 2\/2/);
+    assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
+});
 
 test('builds one exact job for each supplied search URL without rewriting filters', () => {
     const input = normalizeInput({
