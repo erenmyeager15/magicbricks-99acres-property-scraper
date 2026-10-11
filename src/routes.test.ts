@@ -167,6 +167,46 @@ test('paginates full search URLs while preserving their filters', () => {
     assert.match(acresUrl, /budget_min=5000000/);
 });
 
+test('MagicBricks custom pagination continues from the supplied page, not page two', () => {
+    const url = 'https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=Mumbai&page=5&bedroom=4';
+    const jobs = buildJobs(normalizeInput({ searchUrls: [url], maxResults: 50 }), ['magicbricks']);
+    assert.deepEqual(jobs.map(job => job.page), [5, 6]);
+    assert.equal(jobs[0].url, url);
+    assert.equal(new URL(jobs[1].url).searchParams.get('page'), '6');
+    assert.equal(new URL(jobs[1].url).searchParams.get('bedroom'), '4');
+    assert.equal(jobs[0].searchKey, jobs[1].searchKey);
+});
+
+test('99acres custom searches retain their start page and bounded short-page fallback', () => {
+    const url = 'https://www.99acres.com/property-in-mumbai-ffid-page-5?property_type=1&budget_min=5000000';
+    const jobs = buildJobs(normalizeInput({ searchUrls: [url], maxResults: 25 }), ['99acres']);
+    assert.deepEqual(jobs.map(job => job.page), [5, 6]);
+    assert.equal(jobs[0].url, url);
+    assert.match(jobs[1].url, /-ffid-page-6\?/);
+    assert.equal(new URL(jobs[1].url).searchParams.get('budget_min'), '5000000');
+    assert.equal(jobs[0].searchKey, jobs[1].searchKey);
+});
+
+test('99acres path and query pagination stay consistent when both are supplied', () => {
+    const url = 'https://www.99acres.com/property-in-pune-ffid-page-5?page=5';
+    const jobs = buildJobs(normalizeInput({ searchUrls: [url], maxResults: 25 }), ['99acres']);
+    assert.equal(jobs[1].page, 6);
+    assert.match(jobs[1].url, /-ffid-page-6\?page=6$/);
+});
+
+test('mixed custom searches keep source-specific page bounds and never exceed 20 pages per URL', () => {
+    const input = normalizeInput({ maxResults: 500, searchUrls: [
+        'https://www.magicbricks.com/search?page=7',
+        'https://www.99acres.com/property-in-pune-ffid-page-8',
+    ] });
+    const jobs = buildJobs(input, ['magicbricks', '99acres']);
+    assert.equal(jobs.length, 40);
+    assert.deepEqual(jobs.filter(job => job.source === 'magicbricks').map(job => job.page),
+        Array.from({ length: 20 }, (_, index) => index + 7));
+    assert.deepEqual(jobs.filter(job => job.source === '99acres').map(job => job.page),
+        Array.from({ length: 20 }, (_, index) => index + 8));
+});
+
 test('extracts safe property detail fields from public listing text', () => {
     const text = 'Posted by owner. This east-facing freehold flat is 0-1 year old with lift(s), security guard and gymnasium.';
 

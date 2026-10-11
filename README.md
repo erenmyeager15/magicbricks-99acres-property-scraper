@@ -12,6 +12,8 @@ The input form is ready to run without editing: it collects one Mumbai property-
 
 If you already filtered a search on MagicBricks or 99acres, paste the complete results-page URL in **Exact portal search**. That keeps the portal's locality, BHK, property type, furnishing, budget, and posted-by filters.
 
+A URL already on page 5 starts at page 5 and continues to page 6, not page 2. Source page numbers are saved with each row. Custom 99acres searches allow one bounded extra page to cover shorter result pages; all searches remain capped at 20 pages per URL. Invalid or conflicting page values are rejected before source access.
+
 ## What It Extracts
 
 - Property title, source (MagicBricks or 99acres), and transaction type (sale or rent)
@@ -35,7 +37,7 @@ Set `monitorStoreName` to a stable name and schedule identical search inputs and
 - `PROPERTY_REPORT`: `FIRST_SEEN`, `PRICE_INCREASE`, `PRICE_DECREASE`, `UPDATED`, `UNCHANGED`, or `NOT_OBSERVED`, with prior/current prices, percentage changes, first/last-seen times and coverage.
 - `PROPERTY_CHANGES.csv`: the same listing changes in a spreadsheet-friendly export. `priceAlert` marks comparable changes meeting `priceChangeThresholdPercent` (default 5%); it does not send a notification.
 - Like-for-like sample medians only when at least three usable rows share transaction type, rent period, locality, property type, BHK and area basis. These are sample statistics, not valuations or full-market averages.
-- `RUN_SUMMARY`: delivered rows, failed/processed pages, source coverage, repeated pagination and result/spending-limit flags, even without monitoring.
+- `RUN_SUMMARY`: delivered rows, failed/processed pages, source coverage, repeated pagination, result/spending-limit flags and an explicit stop reason, even without monitoring. Output-billing failures retain a summary and are not counted as portal failures.
 
 `FIRST_SEEN` means first observed by this watchlist, not newly posted. `NOT_OBSERVED` means absent from this bounded run, **not sold, rented or removed**. Rank changes, filters, result caps and source failures can all hide listings. A price alert requires usable, non-range prices with unchanged area and asking-price basis; unsupported units and unknown rental periods are not silently compared.
 
@@ -68,7 +70,7 @@ Cost-control tips:
 
 - Run the prefilled MagicBricks + Mumbai sample with `maxResults: 1`.
 - Leave price filters empty for the first run; unknown-price listings are excluded when filters are active.
-- Set a maximum cost per run in Apify Console. The Actor stops requesting additional pages when Apify reports that limit.
+- Set a maximum cost per run in Apify Console. Remaining property charges are checked before proxy setup, each page and each dataset push. A depleted limit finishes with `stopReason: "SPENDING_LIMIT"`, not a false source failure or empty-search claim. Startup/platform costs can still apply. Streaming stops early when enough complete, matching rows fit the remaining result and charge limits.
 - Use `both` only after checking a one-source result.
 
 ## Input

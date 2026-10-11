@@ -92,6 +92,11 @@ test('maintenance, deposits, EMI and booking fees cannot masquerade as listing p
     assert.equal(extractPriceDisplay('Maintenance: INR 1 Lakh EMI: INR 4000/month'), null);
     assert.equal(extractPriceDisplay('Rs. 9000 per sqft INR 85 Lakh'), 'INR 85 Lakh');
 });
+test('punctuation-only source price placeholders never become price display values', () => {
+    assert.equal(extractPriceDisplay('Rs , Cr Carpet Area 1000 sqft'), null);
+    assert.equal(extractPriceDisplay('INR . Lakh Carpet Area 1000 sqft'), null);
+    assert.equal(extractPriceDisplay('Rs , Cr INR 85 Lakh Carpet Area 1000 sqft'), 'INR 85 Lakh');
+});
 test('does not stop when the ItemList is absent or arrives later', () => {
     assert.equal(completeMagicPrefix(card(1), job, input, 1, new Set()), null);
     assert.equal(completeMagicPrefix(card(1) + ld([1]), job, input, 1, new Set()), null);

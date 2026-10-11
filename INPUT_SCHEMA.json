@@ -52,7 +52,7 @@
     "searchUrls": {
       "title": "MagicBricks or 99acres search URLs",
       "type": "array",
-      "description": "Optional. Paste complete search-results URLs to preserve the portal's locality, BHK, property type, furnishing, budget, and posted-by filters. When supplied, these URLs override the quick-start portal, transaction, and city fields.",
+      "description": "Optional. Paste complete search-results URLs to preserve portal filters. A URL on page 5 starts at page 5 and continues forward. These URLs override the quick-start portal, transaction, and city fields.",
       "editor": "stringList",
       "items": { "type": "string" },
       "maxItems": 10,

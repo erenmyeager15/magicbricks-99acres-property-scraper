@@ -116,7 +116,9 @@ test('round-robins supplied portal URLs rather than exhausting the first source 
         'https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=Mumbai',
         'https://www.99acres.com/property-in-mumbai-ffid',
     ] }), ['magicbricks', '99acres']);
-    assert.deepEqual(jobs.map(job => [job.source, job.page]), [['magicbricks', 1], ['99acres', 1], ['magicbricks', 2], ['99acres', 2]]);
+    assert.deepEqual(jobs.map(job => [job.source, job.page]), [
+        ['magicbricks', 1], ['99acres', 1], ['magicbricks', 2], ['99acres', 2], ['99acres', 3],
+    ]);
 });
 test('validates monitoring name and threshold without changing default scraping', () => {
     assert.equal(normalizeInput(null).monitorStoreName, null);

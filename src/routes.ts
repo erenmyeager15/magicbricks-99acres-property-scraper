@@ -1,8 +1,8 @@
 import { Actor, log } from 'apify';
 import { fetch, ProxyAgent, type Dispatcher } from 'undici';
 import { createHash } from 'node:crypto';
-import { wasPushedRecordSaved } from './billing.js';
-import { normalizeInput } from './input.js';
+import { wasPushedRecordSaved, type PushDataChargeResult } from './billing.js';
+import { normalizeInput, searchUrlStartPage } from './input.js';
 import { addPropertyIntelligence, monitorScope, propertyKey, squareFeet } from './property-intelligence.js';
 import { PropertyMonitorError, savePropertyMonitor } from './property-monitor.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
@@ -23,14 +23,41 @@ const REQUEST_HEADERS = {
 };
 
 type ProxyConfiguration = Awaited<ReturnType<typeof Actor.createProxyConfiguration>>;
+type PageProxy = Pick<NonNullable<ProxyConfiguration>, 'newUrl'> | undefined;
 type AnyObject = Record<string, unknown>;
 type StateListing = Omit<Partial<PropertyRecord>, 'area'> & {
     area?: { value: number | null; unit: string | null };
 };
 
-export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
+// Exercise the whole collection/billing/reporting path offline, not only its helpers.
+export interface PropertyScrapeRuntime {
+    createProxy(configuration: Record<string, unknown> | undefined): Promise<PageProxy>;
+    remainingChargeCount(): number;
+    fetchPage(url: string, proxy: PageProxy, options: FetchHtmlOptions): Promise<string>;
+    pushRecord(record: PropertyRecord): Promise<PushDataChargeResult>;
+    setValue(key: string, value: unknown): Promise<void>;
+    setStatus(message: string): Promise<void>;
+    saveMonitor: typeof savePropertyMonitor;
+    wait(ms: number): Promise<void>;
+}
+
+const actorRuntime: PropertyScrapeRuntime = {
+    createProxy: configuration => Actor.createProxyConfiguration(configuration),
+    remainingChargeCount: () => {
+        const charging = Actor.getChargingManager();
+        return charging.getPricingInfo().isPayPerEvent
+            ? charging.calculateMaxEventChargeCountWithinLimit(CHARGE_EVENT_NAME) : Infinity;
+    },
+    fetchPage: fetchHtml,
+    pushRecord: record => Actor.pushData(record, CHARGE_EVENT_NAME),
+    setValue: (key, value) => Actor.setValue(key, value),
+    setStatus: async message => { await Actor.setStatusMessage(message); },
+    saveMonitor: savePropertyMonitor,
+    wait: delay,
+};
+
+export async function scrapeProperties(rawInput: ActorInput, runtime: PropertyScrapeRuntime = actorRuntime): Promise<void> {
     const input = normalizeInput(rawInput);
-    const proxyConfiguration = await Actor.createProxyConfiguration(input.proxyConfiguration);
     const configuredSources = resolveSources(input.source);
     const jobs = buildJobs(input, configuredSources);
     const observedAt = new Date().toISOString();
@@ -45,7 +72,9 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
     let pushed = 0;
     let processedPages = 0;
     let failedPages = 0;
-    let spendingLimitReached = false;
+    // An exhausted limit is a requested stop, not a failed or empty source search.
+    let spendingLimitReached = remainingPropertyCount(runtime) === 0;
+    const proxyConfiguration = spendingLimitReached ? undefined : await runtime.createProxy(input.proxyConfiguration);
     let fatalBillingError: Error | null = null;
     let earlyStoppedPages = 0;
     let decodedHtmlBytesRead = 0;
@@ -63,6 +92,11 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
 
         const searchKey = job.searchKey;
         if (exhaustedSearches.has(searchKey)) continue;
+        const chargeableCount = remainingPropertyCount(runtime);
+        if (chargeableCount === 0) {
+            spendingLimitReached = true;
+            break;
+        }
 
         log.info(`Fetching ${job.source} ${job.transactionType} listings`, {
             city: job.city,
@@ -73,10 +107,10 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
         try {
             const softCap = Math.ceil(input.maxResults / sources.length);
             const balanceFirstPass = sources.length > 1 && attemptedSources.size < sources.length;
-            const rowsNeeded = Math.min(input.maxResults - pushed,
+            const rowsNeeded = Math.min(input.maxResults - pushed, chargeableCount,
                 balanceFirstPass ? softCap - (sourceCounts.get(job.source) ?? 0) : input.maxResults - pushed);
             let parsedRecords: PropertyRecord[] = [];
-            await fetchHtml(job.url, proxyConfiguration, {
+            await runtime.fetchPage(job.url, proxyConfiguration, {
                 validate: html => {
                     parsedRecords = job.source === 'magicbricks' ? parseMagicBricks(html, job) : parse99Acres(html, job);
                     return classifyPropertyPage(html, parsedRecords.length);
@@ -110,7 +144,11 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
                 if (!passesPriceFilter(record, input)) continue;
 
                 try {
-                    const chargeResult = await Actor.pushData(record, CHARGE_EVENT_NAME);
+                    if (remainingPropertyCount(runtime) === 0) {
+                        spendingLimitReached = true;
+                        break;
+                    }
+                    const chargeResult = await runtime.pushRecord(record);
                     const recordWasSaved = wasPushedRecordSaved(chargeResult);
 
                     if (recordWasSaved) {
@@ -121,16 +159,14 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
                         savedRecords.push(record);
                     }
 
-                    if (chargeResult.eventChargeLimitReached) {
+                    if (chargeResult.eventChargeLimitReached || remainingPropertyCount(runtime) === 0) {
                         spendingLimitReached = true;
-                        await Actor.setStatusMessage(`Stopped at the user's spending limit after ${pushed} property listings`);
                         log.info('User spending limit reached; stopping before more property pages are requested.');
                         break;
                     }
                 } catch (error) {
                     fatalBillingError = error instanceof Error ? error : new Error(String(error));
-                    spendingLimitReached = true;
-                    await Actor.setStatusMessage('Stopped because property output billing failed.');
+                    await runtime.setStatus('Stopped because property output billing failed.');
                     log.error('Stopping property scrape because dataset push with property-scraped charge failed.', {
                         error: fatalBillingError.message,
                     });
@@ -148,6 +184,8 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
                 totalPushed: pushed,
             });
         } catch (error) {
+            // Billing/output failures are not portal failures and must not trigger source recovery.
+            if (fatalBillingError) break;
             attemptedSources.add(job.source);
             failedPages += 1;
             searchFailures.set(searchKey, (searchFailures.get(searchKey) ?? 0) + 1);
@@ -165,41 +203,54 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
             input.maxResults,
             spendingLimitReached,
             fatalBillingError,
-            jobIndex < jobs.length - 1,
+            jobs.slice(jobIndex + 1).some(next => !exhaustedSearches.has(next.searchKey)),
         )) {
-            await delay(randomInt(400, 900));
+            await runtime.wait(randomInt(400, 900));
         }
     }
 
-    if (fatalBillingError) throw fatalBillingError;
     const coverage = {
         savedListings: pushed, processedPages, failedPages, spendingLimitReached,
         resultLimitReached: pushed >= input.maxResults,
         requestedSources: sources, sourcesWithSavedListings: [...sourceCounts.keys()],
         failedSearches: searchFailures.size, repeatedSearchPages: repeatedPages.size,
         earlyStoppedPages, decodedHtmlBytesRead,
+        stopReason: fatalBillingError ? 'OUTPUT_BILLING_FAILURE'
+            : spendingLimitReached ? 'SPENDING_LIMIT'
+                : pushed >= input.maxResults ? 'RESULT_LIMIT'
+                    : processedPages === 0 ? 'SOURCE_FAILURE'
+                        : exhaustedSearches.size === new Set(jobs.map(job => job.searchKey)).size
+                            ? 'SEARCH_EXHAUSTED' : 'PAGE_LIMIT',
         boundedSample: true,
     };
-    await Actor.setValue('RUN_SUMMARY', coverage);
-    if (input.monitorStoreName && processedPages > 0) {
+    await runtime.setValue('RUN_SUMMARY', coverage);
+    if (fatalBillingError) throw fatalBillingError;
+    if (spendingLimitReached) {
+        await runtime.setStatus(`Stopped at the user's spending limit after ${pushed} property listings`);
+    }
+    if (input.monitorStoreName && processedPages > 0 && !(spendingLimitReached && pushed === 0)) {
         try {
-            await savePropertyMonitor(input.monitorStoreName, savedRecords,
+            await runtime.saveMonitor(input.monitorStoreName, savedRecords,
                 monitorScope(input, jobs.map(job => job.searchKey)), observedAt,
                 input.priceChangeThresholdPercent, coverage);
         } catch (error) {
             // Keep core results, but never label a failed persistent comparison as a successful baseline.
-            await Actor.setValue('PROPERTY_REPORT', { historyCommitted: error instanceof PropertyMonitorError ? error.historyCommitted : false, coverage,
+            await runtime.setValue('PROPERTY_REPORT', { historyCommitted: error instanceof PropertyMonitorError ? error.historyCommitted : false, coverage,
                 error: (error as Error).message });
             throw new Error(`Property data was saved, but the requested monitor update failed: ${(error as Error).message}`);
         }
     }
 
     if (pushed === 0) {
+        if (spendingLimitReached) {
+            log.info('Property scrape stopped without requesting or saving more listings because the spending limit was reached.');
+            return;
+        }
         if (shouldFailEmptyRun(processedPages)) {
             throw new Error('All property pages failed. See the response diagnostics in the log; no listings were saved.');
         }
 
-        await Actor.setStatusMessage('Search completed successfully, but no listings matched the supplied filters.');
+        await runtime.setStatus('Search completed successfully, but no listings matched the supplied filters.');
         log.info('Property scrape finished with no matching listings', { processedPages, failedPages });
         return;
     }
@@ -210,6 +261,14 @@ export async function scrapeProperties(rawInput: ActorInput): Promise<void> {
         failedPages,
         sourceCounts: Object.fromEntries(sourceCounts),
     });
+}
+
+function remainingPropertyCount(runtime: PropertyScrapeRuntime): number {
+    const count = runtime.remainingChargeCount();
+    if (count !== Infinity && (!Number.isFinite(count) || count < 0)) {
+        throw new Error('Property billing returned an invalid remaining limit; stopping instead of requesting unbillable output.');
+    }
+    return Math.floor(count);
 }
 
 export function shouldFailEmptyRun(processedPages: number): boolean {
@@ -240,14 +299,21 @@ export function buildJobs(input: NormalizedInput, sources: Array<Exclude<Propert
 
     if (input.searchUrls.length > 0) {
         const customJobs: ScrapeJob[] = [];
+        const searches = input.searchUrls.map(search => ({
+            search, startPage: searchUrlStartPage(new URL(search.url), search.source),
+            pageLimit: search.source === '99acres' ? calculate99AcresPageLimit(input.maxResults) : requestedPages,
+        }));
+        const maxPages = Math.max(...searches.map(search => search.pageLimit));
 
-        for (let page = 1; page <= requestedPages; page += 1) {
-            for (const searchUrl of input.searchUrls) {
+        for (let offset = 0; offset < maxPages; offset += 1) {
+            for (const { search: searchUrl, startPage, pageLimit } of searches) {
+                if (offset >= pageLimit) continue;
+                const page = startPage + offset;
                 const searchKey = `${searchUrl.source}:${searchUrl.url}`;
                 customJobs.push({
                     ...searchUrl,
                     page,
-                    url: paginateSearchUrl(searchUrl.url, searchUrl.source, page),
+                    url: offset === 0 ? searchUrl.url : paginateSearchUrl(searchUrl.url, searchUrl.source, page),
                     searchKey,
                     isCustomUrl: true,
                 });
@@ -314,6 +380,7 @@ export function paginateSearchUrl(
 
     if (/-ffid(?:-page-\d+)?\/?$/i.test(url.pathname)) {
         url.pathname = url.pathname.replace(/-ffid(?:-page-\d+)?\/?$/i, `-ffid-page-${page}`);
+        if (url.searchParams.has('page')) url.searchParams.set('page', String(page));
     } else {
         url.searchParams.set('page', String(page));
     }
@@ -1293,7 +1360,7 @@ function extractPropertyType(text: string): string | null {
 
 export function extractPriceDisplay(text: string | null): string | null {
     if (!text) return null;
-    const candidates = [...text.matchAll(/(?:\u20b9|Rs\.?|INR)\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?(?:\s*-\s*(?:\u20b9|Rs\.?|INR)?\s*[\d,.]+(?:\s*(?:Lac|Lakh|Cr|Crore))?)?(?:\s*(?:\/\s*month|monthly))?/gi)]
+    const candidates = [...text.matchAll(/(?:\u20b9|Rs\.?|INR)\s*\d[\d,.]*(?:\s*(?:Lac|Lakh|Cr|Crore))?(?:\s*-\s*(?:\u20b9|Rs\.?|INR)?\s*\d[\d,.]*(?:\s*(?:Lac|Lakh|Cr|Crore))?)?(?:\s*(?:\/\s*month|monthly))?/gi)]
         .map((match) => ({
             value: cleanText(match[0]),
             before: text.slice(Math.max(0, (match.index ?? 0) - 60), match.index ?? 0),

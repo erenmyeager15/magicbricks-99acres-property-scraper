@@ -46,6 +46,32 @@ test('rejects lookalike and credential-bearing search URLs', () => {
     );
 });
 
+test('rejected search URLs never echo credentials or query secrets', () => {
+    for (const url of [
+        'https://user:private-password@www.99acres.com/property-in-pune-ffid',
+        'https://magicbricks.com.evil.example/search?token=private-password',
+        'not a url private-password',
+    ]) {
+        assert.throws(() => normalizeInput({ searchUrls: [url] }), error => {
+            assert.ok(error instanceof Error);
+            assert.doesNotMatch(error.message, /private-password|user:/);
+            return true;
+        });
+    }
+});
+
+test('rejects invalid or conflicting starting pages before requesting the source', () => {
+    for (const url of [
+        'https://www.magicbricks.com/search?page=0',
+        'https://www.magicbricks.com/search?page=2.5',
+        'https://www.magicbricks.com/search?page=2&page=3',
+        'https://www.99acres.com/property-in-mumbai-ffid-page-5?page=2',
+        'https://www.99acres.com/property-in-mumbai-ffid-page-invalid',
+    ]) {
+        assert.throws(() => normalizeInput({ searchUrls: [url] }), /starting page/i);
+    }
+});
+
 test('cleans cities, clamps limits, and completes partial proxy input', () => {
     const input = normalizeInput({
         source: 'both',

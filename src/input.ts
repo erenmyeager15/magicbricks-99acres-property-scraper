@@ -45,6 +45,21 @@ function searchUrlSource(url: URL): Exclude<PropertySource, 'both'> | null {
     return null;
 }
 
+export function searchUrlStartPage(url: URL, source: Exclude<PropertySource, 'both'>): number {
+    const pages = url.searchParams.getAll('page');
+    const pathPage = source === '99acres'
+        ? url.pathname.match(/-ffid-page-([^/]+)\/?$/i)?.[1] : undefined;
+    if (pathPage !== undefined) pages.push(pathPage);
+    if (pages.length === 0) return 1;
+
+    const numbers = pages.map(value => /^\d+$/.test(value) ? Number(value) : NaN);
+    if (numbers.some(page => !Number.isSafeInteger(page) || page < 1 || page > Number.MAX_SAFE_INTEGER - 20)
+        || numbers.some(page => page !== numbers[0])) {
+        throw new Error('Search URL starting page must be one positive integer, with matching path and query page values.');
+    }
+    return numbers[0];
+}
+
 function normalizeSearchUrls(value: unknown, fallbackCity: string): SearchUrlDefinition[] {
     if (value === undefined || value === null) return [];
     if (!Array.isArray(value)) throw new Error('searchUrls must be an array of MagicBricks or 99acres URLs.');
@@ -63,15 +78,16 @@ function normalizeSearchUrls(value: unknown, fallbackCity: string): SearchUrlDef
         try {
             url = new URL(rawValue.trim());
         } catch {
-            throw new Error(`Invalid search URL: ${rawValue}`);
+            throw new Error('Invalid search URL. Each searchUrls item must be a complete public portal URL.');
         }
 
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) {
-            throw new Error(`Search URL must be a standard public HTTPS URL: ${rawValue}`);
+            throw new Error('Search URL must be a standard public HTTPS URL without credentials or a custom port.');
         }
 
         const source = searchUrlSource(url);
-        if (!source) throw new Error(`Search URL must use magicbricks.com or 99acres.com: ${rawValue}`);
+        if (!source) throw new Error('Search URL must use magicbricks.com or 99acres.com.');
+        searchUrlStartPage(url, source);
 
         url.protocol = 'https:';
         url.hash = '';
