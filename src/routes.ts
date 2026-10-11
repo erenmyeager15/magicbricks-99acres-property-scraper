@@ -3,6 +3,7 @@ import { fetch, ProxyAgent, type Dispatcher } from 'undici';
 import { createHash } from 'node:crypto';
 import { wasPushedRecordSaved, type PushDataChargeResult } from './billing.js';
 import { normalizeInput, searchUrlStartPage } from './input.js';
+import { PropertyFailureError, propertyFailure, type PropertyFailureInfo } from './failures.js';
 import { addPropertyIntelligence, monitorScope, propertyKey, squareFeet } from './property-intelligence.js';
 import { PropertyMonitorError, savePropertyMonitor } from './property-monitor.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
@@ -57,7 +58,13 @@ const actorRuntime: PropertyScrapeRuntime = {
 };
 
 export async function scrapeProperties(rawInput: ActorInput, runtime: PropertyScrapeRuntime = actorRuntime): Promise<void> {
-    const input = normalizeInput(rawInput);
+    let input: NormalizedInput;
+    try { input = normalizeInput(rawInput); }
+    catch (error) {
+        const failure = propertyFailure(error, 'INPUT_INVALID');
+        await runtime.setValue('RUN_SUMMARY', preflightFailureSummary('INPUT_INVALID', failure.info));
+        throw failure;
+    }
     const configuredSources = resolveSources(input.source);
     const jobs = buildJobs(input, configuredSources);
     const observedAt = new Date().toISOString();
@@ -74,8 +81,21 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     let failedPages = 0;
     // An exhausted limit is a requested stop, not a failed or empty source search.
     let spendingLimitReached = remainingPropertyCount(runtime) === 0;
-    const proxyConfiguration = spendingLimitReached ? undefined : await runtime.createProxy(input.proxyConfiguration);
+    let proxyConfiguration: PageProxy;
+    if (!spendingLimitReached) {
+        try { proxyConfiguration = await runtime.createProxy(input.proxyConfiguration); }
+        catch (error) {
+            const failure = propertyFailure(error, 'PROXY_CONFIGURATION');
+            await runtime.setValue('RUN_SUMMARY', preflightFailureSummary('PROXY_CONFIGURATION_FAILURE', failure.info, sources));
+            await runtime.setStatus(failure.message);
+            throw failure;
+        }
+    }
     let fatalBillingError: Error | null = null;
+    let fatalProxyError: PropertyFailureError | null = null;
+    const failureCategories: Record<string, number> = {};
+    const failedPageDiagnostics: Array<PropertyFailureInfo & { source: string; page: number }> = [];
+    let requestAttempts = 0;
     let earlyStoppedPages = 0;
     let decodedHtmlBytesRead = 0;
 
@@ -88,7 +108,7 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     });
 
     for (const [jobIndex, job] of jobs.entries()) {
-        if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError) break;
+        if (pushed >= input.maxResults || spendingLimitReached || fatalBillingError || fatalProxyError) break;
 
         const searchKey = job.searchKey;
         if (exhaustedSearches.has(searchKey)) continue;
@@ -101,7 +121,6 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
         log.info(`Fetching ${job.source} ${job.transactionType} listings`, {
             city: job.city,
             page: job.page,
-            url: job.url,
         });
 
         try {
@@ -119,6 +138,7 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
                     ? text => completeMagicPrefix(text, job, input, rowsNeeded, seen) : undefined,
                 onChunk: bytes => { decodedHtmlBytesRead += bytes; },
                 onEarlyStop: () => { earlyStoppedPages += 1; },
+                onRequestAttempt: () => { requestAttempts += 1; },
             });
             processedPages += 1;
 
@@ -165,10 +185,10 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
                         break;
                     }
                 } catch (error) {
-                    fatalBillingError = error instanceof Error ? error : new Error(String(error));
+                    fatalBillingError = propertyFailure(error, 'OUTPUT_BILLING_FAILURE');
                     await runtime.setStatus('Stopped because property output billing failed.');
                     log.error('Stopping property scrape because dataset push with property-scraped charge failed.', {
-                        error: fatalBillingError.message,
+                        category: 'OUTPUT_BILLING_FAILURE',
                     });
                     throw fatalBillingError;
                 }
@@ -188,15 +208,23 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
             if (fatalBillingError) break;
             attemptedSources.add(job.source);
             failedPages += 1;
+            const failure = propertyFailure(error);
+            failureCategories[failure.info.category] = (failureCategories[failure.info.category] ?? 0) + 1;
+            if (failedPageDiagnostics.length < 20) failedPageDiagnostics.push({ ...failure.info, source: job.source, page: job.page });
+            if (failure.stopRun) fatalProxyError = failure;
             searchFailures.set(searchKey, (searchFailures.get(searchKey) ?? 0) + 1);
             if (shouldStopFailedSearch(searchFailures.get(searchKey)!)) exhaustedSearches.add(searchKey);
-            log.warning(`Skipping failed page: ${(error as Error).message}`, {
+            log.warning('Property page failed', {
                 source: job.source,
                 city: job.city,
                 page: job.page,
-                url: job.url,
+                ...failure.info,
             });
         }
+
+        // A bad proxy credential/configuration affects every city and portal.
+        // Do not multiply the same permanent failure across subsequent jobs.
+        if (fatalProxyError) break;
 
         if (shouldDelayBeforeNextJob(
             pushed,
@@ -214,8 +242,9 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
         resultLimitReached: pushed >= input.maxResults,
         requestedSources: sources, sourcesWithSavedListings: [...sourceCounts.keys()],
         failedSearches: searchFailures.size, repeatedSearchPages: repeatedPages.size,
-        earlyStoppedPages, decodedHtmlBytesRead,
+        earlyStoppedPages, decodedHtmlBytesRead, requestAttempts, failureCategories, failedPageDiagnostics,
         stopReason: fatalBillingError ? 'OUTPUT_BILLING_FAILURE'
+            : fatalProxyError ? 'PROXY_CONFIGURATION_FAILURE'
             : spendingLimitReached ? 'SPENDING_LIMIT'
                 : pushed >= input.maxResults ? 'RESULT_LIMIT'
                     : processedPages === 0 ? 'SOURCE_FAILURE'
@@ -225,6 +254,7 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     };
     await runtime.setValue('RUN_SUMMARY', coverage);
     if (fatalBillingError) throw fatalBillingError;
+    if (fatalProxyError) throw fatalProxyError;
     if (spendingLimitReached) {
         await runtime.setStatus(`Stopped at the user's spending limit after ${pushed} property listings`);
     }
@@ -235,9 +265,10 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
                 input.priceChangeThresholdPercent, coverage);
         } catch (error) {
             // Keep core results, but never label a failed persistent comparison as a successful baseline.
-            await runtime.setValue('PROPERTY_REPORT', { historyCommitted: error instanceof PropertyMonitorError ? error.historyCommitted : false, coverage,
-                error: (error as Error).message });
-            throw new Error(`Property data was saved, but the requested monitor update failed: ${(error as Error).message}`);
+            const failure = propertyFailure(error, 'MONITOR_UPDATE_FAILURE');
+            await runtime.setValue('PROPERTY_REPORT', { historyCommitted: error instanceof PropertyMonitorError ? error.historyCommitted : false,
+                coverage, error: failure.message, failure: failure.info });
+            throw failure;
         }
     }
 
@@ -247,7 +278,8 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
             return;
         }
         if (shouldFailEmptyRun(processedPages)) {
-            throw new Error('All property pages failed. See the response diagnostics in the log; no listings were saved.');
+            throw new PropertyFailureError({ category: 'SOURCE_HTTP',
+                message: 'All property pages failed. See RUN_SUMMARY failure categories and response diagnostics; no listings were saved.' });
         }
 
         await runtime.setStatus('Search completed successfully, but no listings matched the supplied filters.');
@@ -261,6 +293,14 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
         failedPages,
         sourceCounts: Object.fromEntries(sourceCounts),
     });
+}
+
+function preflightFailureSummary(stopReason: string, failure: PropertyFailureInfo, sources: string[] = []) {
+    return { savedListings: 0, processedPages: 0, failedPages: 0, spendingLimitReached: false,
+        resultLimitReached: false, requestedSources: sources, sourcesWithSavedListings: [],
+        failedSearches: 0, repeatedSearchPages: 0, earlyStoppedPages: 0, decodedHtmlBytesRead: 0,
+        requestAttempts: 0, failureCategories: { [failure.category]: 1 }, failedPageDiagnostics: [],
+        preflightFailure: failure, stopReason, boundedSample: true };
 }
 
 function remainingPropertyCount(runtime: PropertyScrapeRuntime): number {
@@ -411,7 +451,7 @@ class NonRetryableRequestError extends Error {
 }
 
 export function isRetryableHttpStatus(status: number): boolean {
-    return status === 403 || status === 407 || status === 408 || status === 429 || status >= 500;
+    return status === 403 || status === 408 || status === 429 || (status >= 500 && status !== 597);
 }
 
 export function createRequestSignal(timeoutMs = REQUEST_TIMEOUT_MS): AbortSignal {
@@ -496,19 +536,24 @@ export async function readBoundedResponseText(
 
 type FetchHtmlOptions = ResponseReadOptions & {
     validate?: (html: string) => ReturnType<typeof classifyPropertyPage>;
+    onRequestAttempt?: () => void;
 };
 
 // Injectable transport keeps recovery tests offline and exercises the production retry loop.
 export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullable<ProxyConfiguration>, 'newUrl'> | undefined,
     options: FetchHtmlOptions = {}, transport = { fetch, delay }): Promise<string> {
-    let lastError: Error | null = null;
+    let lastError: PropertyFailureError | null = null;
 
     for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
         let dispatcher: Dispatcher | undefined;
+        let requestFailed = false;
 
         try {
-            const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
-            dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+            try {
+                const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+                dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+            } catch (error) { throw propertyFailure(error, 'PROXY_CONFIGURATION', attempt); }
+            options.onRequestAttempt?.();
             const response = await transport.fetch(url, {
                 headers: REQUEST_HEADERS,
                 dispatcher,
@@ -516,12 +561,12 @@ export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullabl
             });
 
             if (!response.ok) {
-                await response.body?.cancel();
-                const error = new Error(`HTTP ${response.status}`);
-                if (!isRetryableHttpStatus(response.status)) {
-                    throw new NonRetryableRequestError(error.message);
-                }
-                throw error;
+                try { await response.body?.cancel(); }
+                catch { log.warning('Could not cancel the rejected property response body.'); }
+                const proxyAuth = [407, 597].includes(response.status);
+                throw new PropertyFailureError({ category: proxyAuth ? 'PROXY_AUTHENTICATION' : 'SOURCE_HTTP',
+                    message: proxyAuth ? `Proxy authorization failed (HTTP ${response.status}); check configured proxy access.` : `HTTP ${response.status}`,
+                    httpStatus: response.status, attempts: attempt }, isRetryableHttpStatus(response.status), proxyAuth);
             }
 
             const html = await readBoundedResponseText(response, MAX_HTML_BYTES, options);
@@ -534,15 +579,24 @@ export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullabl
                     redirected: response.redirected,
                     ...propertyResponseEvidence(html),
                 });
-                throw new Error(`${state === 'maintenance' ? 'Source returned a maintenance page instead of property listings' : `Property response ${state}`} (HTTP ${response.status}, ${Buffer.byteLength(html)} decoded bytes, attempt ${attempt}/${MAX_REQUEST_ATTEMPTS})`);
+                throw new PropertyFailureError({ category: state === 'maintenance' ? 'SOURCE_MAINTENANCE'
+                    : state === 'blocked' ? 'SOURCE_BLOCKED' : 'SOURCE_UNRECOGNIZED',
+                    message: `${state === 'maintenance' ? 'Source returned a maintenance page instead of property listings' : `Property response ${state}`} (HTTP ${response.status}, ${Buffer.byteLength(html)} decoded bytes, attempt ${attempt}/${MAX_REQUEST_ATTEMPTS})`,
+                    httpStatus: response.status, attempts: attempt }, true);
             }
 
             return html;
         } catch (error) {
-            lastError = error instanceof Error ? error : new Error(String(error));
-            if (error instanceof NonRetryableRequestError) break;
+            requestFailed = true;
+            lastError = error instanceof NonRetryableRequestError
+                ? new PropertyFailureError({ category: 'RESPONSE_TOO_LARGE', message: error.message, attempts: attempt })
+                : propertyFailure(error, 'NETWORK_ERROR', attempt);
+            if (!lastError.retryable) break;
         } finally {
-            await dispatcher?.close();
+            // Destroy failed connections rather than waiting for a stalled tunnel
+            // to drain. Cleanup errors must not hide the original safe category.
+            try { if (requestFailed) await dispatcher?.destroy(); else await dispatcher?.close(); }
+            catch { log.warning('Property proxy connection cleanup failed.'); }
         }
         if (attempt < MAX_REQUEST_ATTEMPTS) await transport.delay(1000 * attempt + randomInt(250, 900));
     }

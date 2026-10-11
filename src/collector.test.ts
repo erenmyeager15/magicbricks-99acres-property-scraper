@@ -229,11 +229,45 @@ test('confirmed empty search remains a genuine empty result, not an outage or bu
     assert.match(check.statuses.at(-1)!, /no listings matched/);
 });
 
-test('output billing errors keep their original failure and save truthful diagnostics', async () => {
+test('proxy setup failure retains safe diagnostics before any property request', async () => {
+    const check = harness([]);
+    check.runtime.createProxy = async () => { throw new Error('Proxy authentication failed: http://user:private-password@proxy.example'); };
+    await assert.rejects(scrapeProperties({ cities: ['Mumbai', 'Pune'], maxResults: 50 }, check.runtime));
+    assert.equal(check.urls.length, 0);
+    assert.equal(check.summary().stopReason, 'PROXY_CONFIGURATION_FAILURE');
+    assert.doesNotMatch(JSON.stringify(check.summary()), /private-password|proxy\.example|user:/);
+});
+
+test('permanent proxy authentication failure stops all remaining cities and portals', async () => {
+    const check = harness([new TypeError('fetch failed private-secret', {
+        cause: new Error('Proxy response (407) !== 200 when HTTP Tunneling'),
+    })]);
+    await assert.rejects(scrapeProperties({ source: 'both', cities: ['Mumbai', 'Pune'], maxResults: 100 }, check.runtime),
+        /Proxy authorization failed/);
+    assert.equal(check.urls.length, 1);
+    assert.equal(check.counts().recoveries, 0);
+    assert.equal(check.counts().waits, 0);
+    assert.equal(check.summary().requestAttempts, 1);
+    assert.equal(check.summary().failedPages, 1);
+    assert.equal(check.summary().stopReason, 'PROXY_CONFIGURATION_FAILURE');
+    assert.deepEqual(check.summary().failureCategories, { PROXY_AUTHENTICATION: 1 });
+    assert.doesNotMatch(JSON.stringify(check.summary()), /private-secret/);
+});
+
+test('invalid input retains a safe summary and never initializes a proxy or requests listings', async () => {
+    const check = harness([]);
+    await assert.rejects(scrapeProperties({ cities: 'Mumbai private-secret' } as never, check.runtime), /cities must be an array/);
+    assert.equal(check.counts().proxyCalls, 0);
+    assert.equal(check.urls.length, 0);
+    assert.equal(check.summary().stopReason, 'INPUT_INVALID');
+    assert.doesNotMatch(JSON.stringify(check.summary()), /private-secret/);
+});
+
+test('output billing errors keep their failure category and save safe truthful diagnostics', async () => {
     const check = harness([listings([1])]);
     check.runtime.pushRecord = async () => { throw new Error('Billing service unavailable'); };
     await assert.rejects(scrapeProperties({ maxResults: 50, monitorStoreName: 'billing-watch' }, check.runtime),
-        /Billing service unavailable/);
+        /Saving or charging for property output failed/);
     assert.equal(check.rows.length, 0);
     assert.equal(check.urls.length, 1);
     assert.equal(check.summary().stopReason, 'OUTPUT_BILLING_FAILURE');
@@ -246,7 +280,7 @@ test('monitor failure preserves delivered rows but is never reported as a succes
     const check = harness([listings([1])]);
     check.runtime.saveMonitor = async () => { throw new PropertyMonitorError('CSV export unavailable', false); };
     await assert.rejects(scrapeProperties({ maxResults: 1, monitorStoreName: 'broken-watch' }, check.runtime),
-        /requested monitor update failed.*CSV export unavailable/);
+        /requested monitor update failed/);
     assert.equal(check.rows.length, 1);
     assert.equal((check.values.get('PROPERTY_REPORT') as { historyCommitted: boolean }).historyCommitted, false);
 });

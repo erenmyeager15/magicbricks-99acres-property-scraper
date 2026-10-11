@@ -105,3 +105,14 @@ test('preserves explicit proxy-off input', () => {
     const input = normalizeInput({ proxyConfiguration: { useApifyProxy: false } });
     assert.deepEqual(input.proxyConfiguration, { useApifyProxy: false });
 });
+
+test('malformed city and monitor inputs fail with actionable validation instead of TypeError', () => {
+    assert.throws(() => normalizeInput({ cities: 'Mumbai' } as never), /cities must be an array/i);
+    assert.throws(() => normalizeInput({ monitorStoreName: 123 } as never), /monitorStoreName must be/i);
+});
+
+test('malformed encoded search paths and non-object proxy input fail safely before access', () => {
+    assert.throws(() => normalizeInput({ searchUrls: ['https://www.99acres.com/property-in-%E0%A4-ffid'] }), /valid URL-encoded/);
+    assert.throws(() => normalizeInput({ proxyConfiguration: 'private-secret' } as never), /proxy configuration object/);
+    assert.throws(() => normalizeInput(['private-secret'] as never), /JSON object/);
+});

@@ -23,6 +23,7 @@ import {
 } from './routes.js';
 import { normalizeInput } from './input.js';
 import { Response, type fetch } from 'undici';
+import { propertyFailure, PropertyFailureError } from './failures.js';
 
 test('replacement-page evidence uses fixed labels without leaking response contents', () => {
     const html = '<html><script>const token="private-value"</script><p>Enable JavaScript. Access denied. Reference #12345 user@example.com</p></html>';
@@ -110,6 +111,76 @@ test('permanent HTTP failures do not use the second attempt', async () => {
     const stub = recoveryTransport([new Response('Missing', { status: 404 })]);
     await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined, {}, stub.transport), /HTTP 404/);
     assert.deepEqual(stub.counts(), { calls: 1, waits: 0 });
+});
+
+test('proxy authorization failures stop after one attempt instead of buying two more connections', async () => {
+    const stub = recoveryTransport([
+        new Response('Proxy authentication required', { status: 407 }),
+        new Response('Proxy authentication required', { status: 407 }),
+        new Response('Proxy authentication required', { status: 407 }),
+    ]);
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined, {}, stub.transport), /proxy|HTTP 407/i);
+    assert.deepEqual(stub.counts(), { calls: 1, waits: 0 });
+});
+
+test('actual HTTPS CONNECT proxy authorization errors are recognized through nested undici causes', async () => {
+    let calls = 0;
+    const raw = new TypeError('fetch failed at http://user:private-password@proxy.example', {
+        cause: Object.assign(new Error('Proxy response (407) !== 200 when HTTP Tunneling'), { code: 'UND_ERR_ABORTED' }),
+    });
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined, {}, {
+        fetch: (async () => { calls += 1; throw raw; }) as typeof fetch,
+        delay: async () => { throw new Error('Authorization failure must not wait and retry'); },
+    }), error => {
+        assert.ok(error instanceof PropertyFailureError);
+        assert.equal(error.info.category, 'PROXY_AUTHENTICATION');
+        assert.equal(error.info.httpStatus, 407);
+        assert.equal(error.stopRun, true);
+        assert.doesNotMatch(JSON.stringify(error.info), /private-password|proxy\.example|user:/);
+        return true;
+    });
+    assert.equal(calls, 1);
+});
+
+test('proxy URL generation failures never dispatch a property request or repeat configuration', async () => {
+    let proxyCalls = 0;
+    let requests = 0;
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', {
+        newUrl: async () => { proxyCalls += 1; throw new Error('Proxy configuration unavailable private-value'); },
+    }, {}, {
+        fetch: (async () => { requests += 1; return new Response('Unexpected'); }) as typeof fetch,
+        delay: async () => { throw new Error('No recovery for broken configuration'); },
+    }), /configured proxy could not be initialized/);
+    assert.equal(proxyCalls, 1);
+    assert.equal(requests, 0);
+});
+
+test('response cleanup cannot turn permanent proxy authorization into a retryable network error', async () => {
+    const response = { ok: false, status: 407,
+        body: { cancel: async () => { throw new Error('private-cleanup-secret'); } } } as unknown as Response;
+    const stub = recoveryTransport([response]);
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined, {}, stub.transport), /HTTP 407/);
+    assert.deepEqual(stub.counts(), { calls: 1, waits: 0 });
+});
+
+test('source 403 can still recover, while upstream proxy credential status 597 stops once', async () => {
+    const blocked = recoveryTransport([new Response('Forbidden', { status: 403 }), new Response('No properties found')]);
+    let requests = 0;
+    await fetchHtml('https://www.magicbricks.com/', undefined, { onRequestAttempt: () => { requests += 1; } }, blocked.transport);
+    assert.deepEqual(blocked.counts(), { calls: 2, waits: 1 });
+    assert.equal(requests, 2);
+    const unauthorized = recoveryTransport([new Response('Invalid upstream credentials', { status: 597 })]);
+    await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined, {}, unauthorized.transport), /HTTP 597/);
+    assert.deepEqual(unauthorized.counts(), { calls: 1, waits: 0 });
+});
+
+test('timeout and network summaries expose fixed categories rather than raw URLs or tokens', () => {
+    const failure = propertyFailure(new TypeError('fetch failed at https://private.example/?token=private-token', {
+        cause: Object.assign(new Error('private-password'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+    }), 'NETWORK_ERROR', 3);
+    assert.equal(failure.info.category, 'REQUEST_TIMEOUT');
+    assert.equal(failure.info.attempts, 3);
+    assert.doesNotMatch(JSON.stringify(failure.info), /private\.example|private-token|private-password/);
 });
 
 test('HTTP and content failures share one three-attempt budget', async () => {
@@ -250,10 +321,10 @@ test('request signal aborts stalled requests at the configured timeout', async (
 });
 
 test('classifies transient HTTP statuses without retrying permanent client failures', () => {
-    for (const status of [403, 407, 408, 429, 500, 502, 503, 504, 599]) {
+    for (const status of [403, 408, 429, 500, 502, 503, 504, 599]) {
         assert.equal(isRetryableHttpStatus(status), true, `${status} should be retryable`);
     }
-    for (const status of [400, 401, 404, 410, 422]) {
+    for (const status of [400, 401, 404, 407, 410, 422, 597]) {
         assert.equal(isRetryableHttpStatus(status), false, `${status} should be permanent`);
     }
 });

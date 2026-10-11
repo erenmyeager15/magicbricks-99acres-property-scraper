@@ -5,6 +5,11 @@ import type {
     SearchUrlDefinition,
     TransactionType,
 } from './types.js';
+import { PropertyFailureError } from './failures.js';
+
+function invalidInput(message: string): never {
+    throw new PropertyFailureError({ category: 'INPUT_INVALID', message });
+}
 
 const DEFAULT_CITIES = ['Mumbai'];
 const DEFAULT_PROXY: Record<string, unknown> = {
@@ -30,7 +35,9 @@ function cityFromSearchUrl(url: URL, source: Exclude<PropertySource, 'both'>, fa
         ?? url.searchParams.get('city_name');
     if (queryCity?.trim()) return queryCity.replace(/\s+/g, ' ').trim();
 
-    const decodedPath = decodeURIComponent(url.pathname);
+    let decodedPath: string;
+    try { decodedPath = decodeURIComponent(url.pathname); }
+    catch { return invalidInput('Search URL path must contain valid URL-encoded characters.'); }
     const pathMatch = source === '99acres'
         ? decodedPath.match(/property(?:-for-rent)?-in-(.+?)-ffid(?:-|\/|$)/i)
         : decodedPath.match(/property-for-(?:sale|rent)-in-([^/?]+)/i);
@@ -55,38 +62,38 @@ export function searchUrlStartPage(url: URL, source: Exclude<PropertySource, 'bo
     const numbers = pages.map(value => /^\d+$/.test(value) ? Number(value) : NaN);
     if (numbers.some(page => !Number.isSafeInteger(page) || page < 1 || page > Number.MAX_SAFE_INTEGER - 20)
         || numbers.some(page => page !== numbers[0])) {
-        throw new Error('Search URL starting page must be one positive integer, with matching path and query page values.');
+        invalidInput('Search URL starting page must be one positive integer, with matching path and query page values.');
     }
     return numbers[0];
 }
 
 function normalizeSearchUrls(value: unknown, fallbackCity: string): SearchUrlDefinition[] {
     if (value === undefined || value === null) return [];
-    if (!Array.isArray(value)) throw new Error('searchUrls must be an array of MagicBricks or 99acres URLs.');
-    if (value.length > MAX_SEARCH_URLS) throw new Error(`searchUrls supports at most ${MAX_SEARCH_URLS} URLs.`);
+    if (!Array.isArray(value)) invalidInput('searchUrls must be an array of MagicBricks or 99acres URLs.');
+    if (value.length > MAX_SEARCH_URLS) invalidInput(`searchUrls supports at most ${MAX_SEARCH_URLS} URLs.`);
 
     const seen = new Set<string>();
     const output: SearchUrlDefinition[] = [];
 
     for (const rawValue of value) {
         if (typeof rawValue !== 'string' || !rawValue.trim()) {
-            throw new Error('Each searchUrls item must be a non-empty URL string.');
+            invalidInput('Each searchUrls item must be a non-empty URL string.');
         }
-        if (rawValue.length > 2_048) throw new Error('Each searchUrls item must be 2,048 characters or fewer.');
+        if (rawValue.length > 2_048) invalidInput('Each searchUrls item must be 2,048 characters or fewer.');
 
         let url: URL;
         try {
             url = new URL(rawValue.trim());
         } catch {
-            throw new Error('Invalid search URL. Each searchUrls item must be a complete public portal URL.');
+            invalidInput('Invalid search URL. Each searchUrls item must be a complete public portal URL.');
         }
 
         if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port) {
-            throw new Error('Search URL must be a standard public HTTPS URL without credentials or a custom port.');
+            invalidInput('Search URL must be a standard public HTTPS URL without credentials or a custom port.');
         }
 
         const source = searchUrlSource(url);
-        if (!source) throw new Error('Search URL must use magicbricks.com or 99acres.com.');
+        if (!source) invalidInput('Search URL must use magicbricks.com or 99acres.com.');
         searchUrlStartPage(url, source);
 
         url.protocol = 'https:';
@@ -116,7 +123,7 @@ function normalizeMoneyFilter(value: unknown, field: string): number | null {
     if (value === null || value === undefined || value === '') return null;
     const parsed = typeof value === 'number' ? value : Number(String(value).replace(/,/g, ''));
     if (!Number.isFinite(parsed) || parsed < 0) {
-        throw new Error(`${field} must be a non-negative INR amount.`);
+        invalidInput(`${field} must be a non-negative INR amount.`);
     }
     return parsed;
 }
@@ -131,6 +138,18 @@ function normalizeProxyConfiguration(input: Record<string, unknown> | undefined)
 }
 
 export function normalizeInput(input: ActorInput | null): NormalizedInput {
+    if (input !== null && (typeof input !== 'object' || Array.isArray(input))) invalidInput('Actor input must be a JSON object.');
+    if (input?.cities !== undefined && input.cities !== null
+        && (!Array.isArray(input.cities) || input.cities.some(city => typeof city !== 'string'))) {
+        invalidInput('cities must be an array of Indian city names.');
+    }
+    if (input?.monitorStoreName !== undefined && input.monitorStoreName !== null && typeof input.monitorStoreName !== 'string') {
+        invalidInput('monitorStoreName must be a text name, or omitted to disable monitoring.');
+    }
+    if (input?.proxyConfiguration !== undefined && input.proxyConfiguration !== null
+        && (typeof input.proxyConfiguration !== 'object' || Array.isArray(input.proxyConfiguration))) {
+        invalidInput('proxyConfiguration must be a proxy configuration object.');
+    }
     const source: PropertySource = ['magicbricks', '99acres', 'both'].includes(input?.source ?? '')
         ? input?.source as PropertySource
         : 'magicbricks';
@@ -144,7 +163,7 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
     const maxPrice = normalizeMoneyFilter(input?.maxPrice, 'maxPrice');
 
     if (minPrice !== null && maxPrice !== null && minPrice > maxPrice) {
-        throw new Error('minPrice cannot be greater than maxPrice.');
+        invalidInput('minPrice cannot be greater than maxPrice.');
     }
 
     const requestedMaxResults = Number(input?.maxResults ?? 1);
@@ -153,12 +172,12 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
         : 1;
     const monitorStoreName = input?.monitorStoreName?.trim() || null;
     if (monitorStoreName && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$/.test(monitorStoreName)) {
-        throw new Error('monitorStoreName must be 1-63 letters, numbers, underscores or hyphens.');
+        invalidInput('monitorStoreName must be 1-63 letters, numbers, underscores or hyphens.');
     }
     const priceChangeThresholdPercent = input?.priceChangeThresholdPercent ?? 5;
     if (typeof priceChangeThresholdPercent !== 'number' || !Number.isFinite(priceChangeThresholdPercent)
         || priceChangeThresholdPercent < 0 || priceChangeThresholdPercent > 100) {
-        throw new Error('priceChangeThresholdPercent must be a number between 0 and 100.');
+        invalidInput('priceChangeThresholdPercent must be a number between 0 and 100.');
     }
 
     return {

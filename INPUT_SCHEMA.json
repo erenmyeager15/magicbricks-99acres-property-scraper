@@ -1,6 +1,6 @@
 {
   "title": "MagicBricks + 99acres Property Scraper Input",
-  "description": "Run the prefilled Mumbai search for one clean property, or paste a filtered MagicBricks/99acres results URL. Residential India proxy is preselected for reliable access.",
+  "description": "Run the prefilled Mumbai search for one property, or paste a filtered MagicBricks/99acres results URL. Residential India proxy is preselected; portal access can still be blocked.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
