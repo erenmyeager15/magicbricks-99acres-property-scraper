@@ -10,7 +10,10 @@ import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, Scrap
 const CHARGE_EVENT_NAME = 'property-scraped';
 export const REQUEST_TIMEOUT_MS = 30_000;
 export const MAX_HTML_BYTES = 12 * 1024 * 1024;
-const MAX_REQUEST_ATTEMPTS = 2;
+// A third connection is cheap compared with a failed paid run and gives
+// residential rotation one more chance to recover from transient challenges.
+// Permanent HTTP failures and confirmed-empty searches still stop immediately.
+const MAX_REQUEST_ATTEMPTS = 3;
 const REQUEST_HEADERS = {
     'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'accept-language': 'en-IN,en;q=0.9',

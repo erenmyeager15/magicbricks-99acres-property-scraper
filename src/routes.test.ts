@@ -61,11 +61,30 @@ test('unknown successful HTML retries with a new proxy connection and recovers',
     assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
 });
 
-test('repeated unknown pages fail after two attempts without inventing an empty search', async () => {
-    const stub = recoveryTransport([new Response('Temporary page'), new Response('Temporary page')]);
+test('repeated unknown pages fail after three attempts without inventing an empty search', async () => {
+    const stub = recoveryTransport([
+        new Response('Temporary page'),
+        new Response('Temporary page'),
+        new Response('Temporary page'),
+    ]);
     await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined,
-        { validate: html => classifyPropertyPage(html, 0) }, stub.transport), /unrecognized.*attempt 2\/2/);
-    assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
+        { validate: html => classifyPropertyPage(html, 0) }, stub.transport), /unrecognized.*attempt 3\/3/);
+    assert.deepEqual(stub.counts(), { calls: 3, waits: 2 });
+});
+
+test('a third rotated connection can recover after two transient replacement pages', async () => {
+    const stub = recoveryTransport([
+        new Response('<html>Temporary page one</html>'),
+        new Response('<html>Temporary page two</html>'),
+        new Response('No properties found'),
+    ]);
+    let proxyCalls = 0;
+    const result = await fetchHtml('https://www.magicbricks.com/', {
+        newUrl: async () => { proxyCalls += 1; return 'http://127.0.0.1:9999'; },
+    }, { validate: html => classifyPropertyPage(html, 0) }, stub.transport);
+    assert.equal(result, 'No properties found');
+    assert.equal(proxyCalls, 3);
+    assert.deepEqual(stub.counts(), { calls: 3, waits: 2 });
 });
 
 test('confirmed empty pages succeed immediately without recovery cost', async () => {
@@ -79,10 +98,10 @@ test('source maintenance is explicit, bounded, and never treated as an empty sea
     const html = "<html><h1>We'll be back soon!</h1><p>Sorry, we're down for maintenance.</p></html>";
     assert.equal(classifyPropertyPage(html, 0), 'maintenance');
     assert.deepEqual(propertyResponseEvidence(html).responseSignals, ['maintenance']);
-    const stub = recoveryTransport([new Response(html), new Response(html)]);
+    const stub = recoveryTransport([new Response(html), new Response(html), new Response(html)]);
     await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined,
-        { validate: text => classifyPropertyPage(text, 0) }, stub.transport), /Source returned a maintenance page.*attempt 2\/2/);
-    assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
+        { validate: text => classifyPropertyPage(text, 0) }, stub.transport), /Source returned a maintenance page.*attempt 3\/3/);
+    assert.deepEqual(stub.counts(), { calls: 3, waits: 2 });
     assert.equal(classifyPropertyPage('<p>Maintenance charges INR 2000</p>', 0), 'unrecognized');
     assert.equal(classifyPropertyPage(html, 1), 'listings');
 });
@@ -93,11 +112,15 @@ test('permanent HTTP failures do not use the second attempt', async () => {
     assert.deepEqual(stub.counts(), { calls: 1, waits: 0 });
 });
 
-test('HTTP and content failures share one two-attempt budget', async () => {
-    const stub = recoveryTransport([new Response('Unavailable', { status: 503 }), new Response('Temporary page')]);
+test('HTTP and content failures share one three-attempt budget', async () => {
+    const stub = recoveryTransport([
+        new Response('Unavailable', { status: 503 }),
+        new Response('Temporary page'),
+        new Response('Temporary page'),
+    ]);
     await assert.rejects(fetchHtml('https://www.magicbricks.com/', undefined,
-        { validate: html => classifyPropertyPage(html, 0) }, stub.transport), /unrecognized.*attempt 2\/2/);
-    assert.deepEqual(stub.counts(), { calls: 2, waits: 1 });
+        { validate: html => classifyPropertyPage(html, 0) }, stub.transport), /unrecognized.*attempt 3\/3/);
+    assert.deepEqual(stub.counts(), { calls: 3, waits: 2 });
 });
 
 test('builds one exact job for each supplied search URL without rewriting filters', () => {

@@ -55,7 +55,7 @@ This independent Actor does not extract phone numbers, emails, private contact d
 
 Property records are charged only when delivered to the dataset. The `apify-actor-start` event is charged according to Actor memory, with at least one startup event.
 
-This Actor uses Apify Pay Per Event pricing, with platform usage included. Failed, blocked, or empty pages do not create `property-scraped` charges; the startup event can still apply. Confirmed empty searches can finish with an empty dataset. Source maintenance and unrecognized pages are retried within a two-attempt limit, then reported as failures rather than empty searches. Partial source failures are disclosed in `RUN_SUMMARY`; an all-failed scrape, billing failure or requested monitor-update failure fails the run.
+This Actor uses Apify Pay Per Event pricing, with platform usage included. Failed, blocked, or empty pages do not create `property-scraped` charges; the startup event can still apply. Confirmed empty searches can finish with an empty dataset. Transient, source-maintenance, and unrecognized responses use a bounded three-connection recovery budget, then are reported as failures rather than empty searches. Permanent HTTP errors and confirmed empty searches are not retried. Partial source failures are disclosed in `RUN_SUMMARY`; an all-failed scrape, billing failure or requested monitor-update failure fails the run.
 
 | Event name | Price per event | 1,000 results | 10,000 results |
 | --- | ---: | ---: | ---: |
