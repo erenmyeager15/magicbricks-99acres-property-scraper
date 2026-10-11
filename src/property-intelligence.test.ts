@@ -64,6 +64,71 @@ test('does not call area/period changes or missing prices a comparable price cha
         assert.equal(change.priceChangePercent, null);
     }
 });
+test('keeps missing areas non-comparable in existing watchlists for both portals', () => {
+    for (const source of ['magicbricks', '99acres'] as const) {
+        const original = row({ source, area: null, areaUnit: null, pricePerSqft: null });
+        const initial = buildPropertyReport([original], null, 'scope', first, 5, {});
+        const saved = readMonitorState(JSON.parse(JSON.stringify(initial.state)));
+        const next = buildPropertyReport([{ ...original, price: 11_000_000 }], saved, 'scope', second, 5, {});
+        const change = next.report.changes[0];
+        assert.equal(change.priceComparable, false);
+        assert.equal(change.priceAlert, false);
+        assert.equal(change.priceChangePercent, null);
+        assert.equal(change.change, 'UPDATED');
+        assert.equal(change.previousPrice, 10_000_000);
+        assert.equal(change.price, 11_000_000);
+        assert.equal(change.firstSeenAt, first);
+        assert.equal(next.state.entries[0].observations.length, 2);
+        assert.equal(next.state.entries[0].observations[1].price, 11_000_000);
+        assert.match(propertyChangesCsv(next.report), /"UPDATED","10000000","11000000","","false","false"/);
+    }
+});
+test('does not alert on price movements when unsupported area changes are not measurable', () => {
+    const initial = buildPropertyReport([row({ area: 1, areaUnit: 'bigha' })], null, 'scope', first, 5, {});
+    const record = row({ area: 2, areaUnit: 'bigha', price: 11_000_000 });
+    const change = buildPropertyReport([record], initial.state, 'scope', second, 5, {}).report.changes[0];
+    assert.equal(change.priceComparable, false);
+    assert.equal(change.priceAlert, false);
+    assert.equal(change.priceChangePercent, null);
+    assert.equal(change.change, 'UPDATED');
+    assert.equal(change.price, 11_000_000);
+    assert.ok(addPropertyIntelligence(record).qualityFlags!.includes('area_missing_or_unsupported'));
+});
+test('requires a known area basis in both observations before reporting a price alert', () => {
+    for (const areaType of [null, '', '   ']) {
+        const original = row({ areaType });
+        const initial = buildPropertyReport([original], null, 'scope', first, 5, {});
+        const record = row({ areaType, price: 11_000_000 });
+        const change = buildPropertyReport([record], initial.state, 'scope', second, 5, {}).report.changes[0];
+        assert.equal(change.priceComparable, false);
+        assert.equal(change.priceAlert, false);
+        assert.equal(change.priceChangePercent, null);
+        assert.equal(change.change, 'UPDATED');
+        assert.ok(addPropertyIntelligence(record).qualityFlags!.includes('area_basis_unknown'));
+        assert.equal(addPropertyIntelligence(record).comparisonKey, null);
+    }
+});
+test('an area becoming known or unknown does not create a comparable price alert', () => {
+    const unknown = row({ area: null, areaUnit: null });
+    const known = row();
+    for (const [before, after] of [[unknown, known], [known, unknown]]) {
+        const initial = buildPropertyReport([before], null, 'scope', first, 5, {});
+        const change = buildPropertyReport([{ ...after, price: 11_000_000 }], initial.state, 'scope', second, 5, {}).report.changes[0];
+        assert.equal(change.priceComparable, false);
+        assert.equal(change.priceAlert, false);
+        assert.equal(change.priceChangePercent, null);
+        assert.equal(change.change, 'UPDATED');
+    }
+});
+test('preserves comparable alerts when supported units describe the same known area', () => {
+    const initial = buildPropertyReport([row({ area: 100, areaUnit: 'sqyd' })], null, 'scope', first, 5, {});
+    const change = buildPropertyReport([row({ area: 900, areaUnit: 'sqft', price: 11_000_000 })],
+        initial.state, 'scope', second, 5, {}).report.changes[0];
+    assert.equal(change.priceComparable, true);
+    assert.equal(change.priceAlert, true);
+    assert.equal(change.priceChangePercent, 10);
+    assert.equal(change.change, 'PRICE_INCREASE');
+});
 test('reports missing rows as NOT_OBSERVED and preserves their history after partial failures', () => {
     const next = buildPropertyReport([], baseline().state, 'scope', second, 5, { failedPages: 1, resultLimitReached: true });
     assert.equal(next.report.changes[0].change, 'NOT_OBSERVED');

@@ -21,7 +21,7 @@ export function addPropertyIntelligence(row: PropertyRecord): PropertyRecord {
     if (row.price === null || !Number.isFinite(row.price) || row.price <= 0) qualityFlags.push('price_missing_or_invalid');
     if (/[-–]\s*(?:₹|Rs\.?|INR)?\s*\d/.test(row.priceDisplay ?? '')) qualityFlags.push('price_range');
     if (areaSqft === null) qualityFlags.push('area_missing_or_unsupported');
-    if (!row.areaType) qualityFlags.push('area_basis_unknown');
+    if (!row.areaType?.trim()) qualityFlags.push('area_basis_unknown');
     const priceBasis = row.transactionType === 'sale' ? 'asking_sale'
         : /(?:\/\s*(?:month|mo)\b|per\s+month|monthly)/i.test(row.priceDisplay ?? '') ? 'monthly_rent' : 'unknown';
     if (priceBasis === 'unknown') qualityFlags.push('rent_period_unknown');
@@ -106,6 +106,10 @@ export function buildPropertyReport(
         const range = row.qualityFlags!.includes('price_range');
         const priceComparable = Boolean(old && old.price !== null && old.price > 0 && row.price !== null && row.price > 0
             && !old.range && !range && old.priceBasis === row.priceBasis && row.priceBasis !== 'unknown'
+            // Equal missing values do not establish that the property's area stayed unchanged.
+            && old.areaSqft !== null && Number.isFinite(old.areaSqft) && old.areaSqft > 0
+            && row.areaSqft != null && Number.isFinite(row.areaSqft) && row.areaSqft > 0
+            && old.areaType?.trim() && row.areaType?.trim()
             && old.areaSqft === row.areaSqft && old.areaType === row.areaType);
         const delta = priceComparable ? Math.round((row.price! - old!.price!) / old!.price! * 10_000) / 100 : null;
         const changed = old && (old.price !== row.price || old.priceBasis !== row.priceBasis
