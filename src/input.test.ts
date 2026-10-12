@@ -15,6 +15,7 @@ test('uses a one-result Mumbai MagicBricks Residential India default', () => {
         apifyProxyGroups: ['RESIDENTIAL'],
         apifyProxyCountry: 'IN',
     });
+    assert.equal(input.allowRecommendedDirectFallback, true);
 });
 
 test('accepts full portal search URLs and preserves their filters', () => {
@@ -92,6 +93,7 @@ test('cleans cities, clamps limits, and completes partial proxy input', () => {
         apifyProxyGroups: ['RESIDENTIAL'],
         apifyProxyCountry: 'IN',
     });
+    assert.equal(input.allowRecommendedDirectFallback, true);
 });
 
 test('rejects inverted price ranges before scraping', () => {
@@ -104,11 +106,43 @@ test('rejects inverted price ranges before scraping', () => {
 test('preserves explicit proxy-off input', () => {
     const input = normalizeInput({ proxyConfiguration: { useApifyProxy: false } });
     assert.deepEqual(input.proxyConfiguration, { useApifyProxy: false });
+    assert.equal(input.allowRecommendedDirectFallback, false);
+});
+
+test('accepts common API aliases without weakening bounded normalization', () => {
+    const input = normalizeInput({
+        cities: [],
+        city: 'Pune',
+        maxItems: 25,
+        searchUrls: [],
+        startUrls: [{ url: 'https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=Pune' }],
+    });
+    assert.deepEqual(input.cities, ['Pune']);
+    assert.equal(input.maxResults, 25);
+    assert.equal(input.searchUrls.length, 1);
+    assert.equal(input.searchUrls[0].city, 'Pune');
+});
+
+test('accepts one city string and one search URL string from API clients', () => {
+    const input = normalizeInput({
+        cities: 'Bengaluru',
+        searchUrls: 'https://www.99acres.com/property-in-bangalore-ffid',
+    });
+    assert.deepEqual(input.cities, ['Bengaluru']);
+    assert.equal(input.searchUrls[0].source, '99acres');
 });
 
 test('malformed city and monitor inputs fail with actionable validation instead of TypeError', () => {
-    assert.throws(() => normalizeInput({ cities: 'Mumbai' } as never), /cities must be an array/i);
+    assert.throws(() => normalizeInput({ cities: [123] } as never), /cities must contain/i);
     assert.throws(() => normalizeInput({ monitorStoreName: 123 } as never), /monitorStoreName must be/i);
+});
+
+test('custom proxy settings never opt into the automatic direct fallback', () => {
+    const input = normalizeInput({ proxyConfiguration: {
+        useApifyProxy: true,
+        apifyProxyGroups: ['DATACENTER'],
+    } });
+    assert.equal(input.allowRecommendedDirectFallback, false);
 });
 
 test('malformed encoded search paths and non-object proxy input fail safely before access', () => {

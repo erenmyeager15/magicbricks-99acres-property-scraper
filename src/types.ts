@@ -2,13 +2,17 @@ export type PropertySource = 'magicbricks' | '99acres' | 'both';
 export type TransactionType = 'sale' | 'rent';
 
 export interface ActorInput {
-    searchUrls?: string[];
+    searchUrls?: string | Array<string | { url?: string }>;
+    searchUrl?: string;
+    startUrls?: string | Array<string | { url?: string }>;
     source?: PropertySource;
     transactionType?: TransactionType;
-    cities?: string[];
+    cities?: string[] | string;
+    city?: string;
     minPrice?: number;
     maxPrice?: number;
     maxResults?: number;
+    maxItems?: number;
     proxyConfiguration?: Record<string, unknown>;
     monitorStoreName?: string;
     priceChangeThresholdPercent?: number;
@@ -23,6 +27,7 @@ export interface NormalizedInput {
     maxPrice: number | null;
     maxResults: number;
     proxyConfiguration?: Record<string, unknown>;
+    allowRecommendedDirectFallback: boolean;
     monitorStoreName: string | null;
     priceChangeThresholdPercent: number;
 }

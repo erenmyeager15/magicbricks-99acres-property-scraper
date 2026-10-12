@@ -67,23 +67,33 @@ export function searchUrlStartPage(url: URL, source: Exclude<PropertySource, 'bo
     return numbers[0];
 }
 
+function searchUrlValue(rawValue: unknown): string | null {
+    if (typeof rawValue === 'string') return rawValue;
+    if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)
+        && typeof (rawValue as { url?: unknown }).url === 'string') {
+        return (rawValue as { url: string }).url;
+    }
+    return null;
+}
+
 function normalizeSearchUrls(value: unknown, fallbackCity: string): SearchUrlDefinition[] {
     if (value === undefined || value === null) return [];
-    if (!Array.isArray(value)) invalidInput('searchUrls must be an array of MagicBricks or 99acres URLs.');
-    if (value.length > MAX_SEARCH_URLS) invalidInput(`searchUrls supports at most ${MAX_SEARCH_URLS} URLs.`);
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length > MAX_SEARCH_URLS) invalidInput(`searchUrls supports at most ${MAX_SEARCH_URLS} URLs.`);
 
     const seen = new Set<string>();
     const output: SearchUrlDefinition[] = [];
 
-    for (const rawValue of value) {
-        if (typeof rawValue !== 'string' || !rawValue.trim()) {
-            invalidInput('Each searchUrls item must be a non-empty URL string.');
+    for (const rawValue of values) {
+        const rawUrl = searchUrlValue(rawValue);
+        if (!rawUrl?.trim()) {
+            invalidInput('Each searchUrls item must be a URL string or an object containing a URL string.');
         }
-        if (rawValue.length > 2_048) invalidInput('Each searchUrls item must be 2,048 characters or fewer.');
+        if (rawUrl.length > 2_048) invalidInput('Each searchUrls item must be 2,048 characters or fewer.');
 
         let url: URL;
         try {
-            url = new URL(rawValue.trim());
+            url = new URL(rawUrl.trim());
         } catch {
             invalidInput('Invalid search URL. Each searchUrls item must be a complete public portal URL.');
         }
@@ -137,12 +147,36 @@ function normalizeProxyConfiguration(input: Record<string, unknown> | undefined)
     };
 }
 
+function isRecommendedProxyConfiguration(input: Record<string, unknown> | undefined): boolean {
+    if (!input) return true;
+    const keys = Object.keys(input).filter(key => input[key] !== undefined);
+    if (keys.some(key => !['useApifyProxy', 'apifyProxyGroups', 'apifyProxyCountry'].includes(key))) return false;
+    if (input.useApifyProxy === false || Array.isArray(input.proxyUrls)) return false;
+    const groups = input.apifyProxyGroups;
+    const normalizedGroups = Array.isArray(groups) ? groups.map(String) : ['RESIDENTIAL'];
+    return normalizedGroups.length === 1
+        && normalizedGroups[0].toUpperCase() === 'RESIDENTIAL'
+        && String(input.apifyProxyCountry ?? 'IN').toUpperCase() === 'IN';
+}
+
+function normalizeCities(value: unknown): string[] {
+    if (value === undefined || value === null) return DEFAULT_CITIES;
+    const values = Array.isArray(value) ? value : [value];
+    if (values.some(city => typeof city !== 'string')) invalidInput('cities must contain Indian city names.');
+    const cities = [...new Set(values
+        .map(city => String(city).replace(/\s+/g, ' ').trim())
+        .filter(Boolean))].slice(0, MAX_CITIES);
+    return cities.length ? cities : DEFAULT_CITIES;
+}
+
+function hasSuppliedValues(value: unknown): boolean {
+    if (Array.isArray(value)) return value.length > 0;
+    if (typeof value === 'string') return value.trim().length > 0;
+    return value !== undefined && value !== null;
+}
+
 export function normalizeInput(input: ActorInput | null): NormalizedInput {
     if (input !== null && (typeof input !== 'object' || Array.isArray(input))) invalidInput('Actor input must be a JSON object.');
-    if (input?.cities !== undefined && input.cities !== null
-        && (!Array.isArray(input.cities) || input.cities.some(city => typeof city !== 'string'))) {
-        invalidInput('cities must be an array of Indian city names.');
-    }
     if (input?.monitorStoreName !== undefined && input.monitorStoreName !== null && typeof input.monitorStoreName !== 'string') {
         invalidInput('monitorStoreName must be a text name, or omitted to disable monitoring.');
     }
@@ -154,11 +188,13 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
         ? input?.source as PropertySource
         : 'magicbricks';
     const transactionType = input?.transactionType === 'rent' ? 'rent' : 'sale';
-    const cities = [...new Set((input?.cities ?? DEFAULT_CITIES)
-        .map((city) => String(city).replace(/\s+/g, ' ').trim())
-        .filter(Boolean))].slice(0, MAX_CITIES);
-    const normalizedCities = cities.length ? cities : DEFAULT_CITIES;
-    const searchUrls = normalizeSearchUrls(input?.searchUrls, normalizedCities[0]);
+    if (input?.city !== undefined && input.city !== null && typeof input.city !== 'string') {
+        invalidInput('city must be an Indian city name.');
+    }
+    const normalizedCities = normalizeCities(hasSuppliedValues(input?.cities) ? input?.cities : input?.city);
+    const suppliedSearchUrls = hasSuppliedValues(input?.searchUrls)
+        ? input?.searchUrls : input?.searchUrl ?? input?.startUrls;
+    const searchUrls = normalizeSearchUrls(suppliedSearchUrls, normalizedCities[0]);
     const minPrice = normalizeMoneyFilter(input?.minPrice, 'minPrice');
     const maxPrice = normalizeMoneyFilter(input?.maxPrice, 'maxPrice');
 
@@ -166,7 +202,7 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
         invalidInput('minPrice cannot be greater than maxPrice.');
     }
 
-    const requestedMaxResults = Number(input?.maxResults ?? 1);
+    const requestedMaxResults = Number(input?.maxResults ?? input?.maxItems ?? 1);
     const maxResults = Number.isFinite(requestedMaxResults)
         ? Math.min(Math.max(Math.floor(requestedMaxResults), 1), MAX_RESULTS)
         : 1;
@@ -189,6 +225,7 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
         maxPrice,
         maxResults,
         proxyConfiguration: normalizeProxyConfiguration(input?.proxyConfiguration),
+        allowRecommendedDirectFallback: isRecommendedProxyConfiguration(input?.proxyConfiguration),
         monitorStoreName,
         priceChangeThresholdPercent,
     };

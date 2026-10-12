@@ -39,7 +39,7 @@ Set `monitorStoreName` to a stable name and schedule identical search inputs and
 - Like-for-like sample medians only when at least three usable rows share transaction type, rent period, locality, property type, BHK and area basis. These are sample statistics, not valuations or full-market averages.
 - `RUN_SUMMARY`: delivered rows, failed/processed pages, source coverage, repeated pagination, result/spending-limit flags and an explicit stop reason, even without monitoring. Output-billing failures retain a summary and are not counted as portal failures.
 
-`RUN_SUMMARY` also records request attempts, safe failure categories and bounded per-page diagnostics. Invalid inputs and proxy setup failures save a preflight summary before property access. Proxy authorization/configuration failures stop the entire run instead of retrying the same unavailable credentials across every city or portal. No automatic paid-proxy fallback is used. Raw proxy URLs, credentials and source query strings are not included in failure diagnostics.
+`RUN_SUMMARY` also records request attempts, safe failure categories, the effective connection path and bounded per-page diagnostics. Invalid inputs and proxy setup failures save a preflight summary before property access. If the unchanged recommended Residential India route is unavailable or rejected, the Actor can try one bounded direct path; it never changes an explicit custom proxy or explicit proxy-off choice. No automatic paid-proxy fallback is used. Raw proxy URLs, credentials and source query strings are not included in failure diagnostics.
 
 `FIRST_SEEN` means first observed by this watchlist, not newly posted. `NOT_OBSERVED` means absent from this bounded run, **not sold, rented or removed**. Rank changes, filters, result caps and source failures can all hide listings. A price alert requires usable, non-range prices with the same positive normalized area, known area type and asking-price basis in both observations. Missing areas, unsupported units, unknown area types and unknown rental periods are not silently compared. Their observed prices remain in the report; a non-comparable price change is marked `UPDATED` with no percentage or price alert. Existing watchlists retain their saved observations.
 
@@ -89,6 +89,8 @@ Cost-control tips:
 | `proxyConfiguration` | object | no | Residential, IN | Apify proxy settings. Residential with India targeting recommended. |
 | `monitorStoreName` | string | no | disabled | Stable watchlist name, 1-63 letters, digits, underscores or hyphens. Reuse only with the same search/filter/limit inputs. |
 | `priceChangeThresholdPercent` | number | no | `5` | Comparable price-change alert threshold, 0-100%. Used only with monitoring. |
+
+API compatibility: `city` can supply one city, `maxItems` can supply the result limit, and `startUrls`/`searchUrl` can supply standard URL strings (including `{ "url": "..." }` entries). The documented fields above take precedence when they contain values. All aliases use the same limits and URL validation.
 
 ## Example Input
 
@@ -205,7 +207,7 @@ console.log(`Got ${items.length} properties`);
 
 - Many detail fields are conditional: geo coordinates, seller category, RERA ID, floor, balconies, parking, and deposit are only saved when the source publishes them. MagicBricks rarely exposes coordinates, so those may be `null`.
 - Price filtering skips listings with an unknown price, since they cannot be compared.
-- MagicBricks and 99acres can reject datacenter traffic. The default input uses Apify Residential proxy with India targeting for reliability.
+- MagicBricks and 99acres can reject datacenter traffic. The default input uses Apify Residential proxy with India targeting for reliability. The bounded direct recovery path is only attempted for the unchanged recommended route; it is not a guarantee of access.
 - Listing availability and prices can change after scraping; verify important decisions against the source page.
 - Pagination is bounded to 20 pages per search. Highly repetitive pages can yield fewer unique records than `maxResults`.
 - The Actor stops a search after two failed pages or an all-duplicate page, rather than repeatedly fetching a blocked/repeated search.
