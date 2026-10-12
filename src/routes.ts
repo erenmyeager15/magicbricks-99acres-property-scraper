@@ -6,6 +6,8 @@ import { normalizeInput, searchUrlStartPage } from './input.js';
 import { PropertyFailureError, propertyFailure, type PropertyFailureInfo } from './failures.js';
 import { addPropertyIntelligence, monitorScope, propertyKey, squareFeet } from './property-intelligence.js';
 import { PropertyMonitorError, savePropertyMonitor } from './property-monitor.js';
+import { readCanonical99State, type Canonical99State } from './99acres-state.js';
+import { readInitial99State } from './99acres-initial-state.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
@@ -26,6 +28,7 @@ const REQUEST_HEADERS = {
 type ProxyConfiguration = Awaited<ReturnType<typeof Actor.createProxyConfiguration>>;
 type PageProxy = Pick<NonNullable<ProxyConfiguration>, 'newUrl'> | undefined;
 type ConnectionPath = 'recommended-residential-in' | 'direct' | 'custom-proxy';
+type ObservedConnection = ConnectionPath | 'not-established';
 type AnyObject = Record<string, unknown>;
 type StateListing = Omit<Partial<PropertyRecord>, 'area'> & {
     area?: { value: number | null; unit: string | null };
@@ -84,14 +87,23 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     let spendingLimitReached = remainingPropertyCount(runtime) === 0;
     let proxyConfiguration: PageProxy;
     const requestedConnection = connectionPath(input.proxyConfiguration);
-    const effectiveConnection = requestedConnection;
+    let effectiveConnection: ObservedConnection = 'not-established';
     if (!spendingLimitReached) {
         try {
             proxyConfiguration = await runtime.createProxy(input.proxyConfiguration);
+            if (requestedConnection !== 'direct' && !proxyConfiguration) {
+                throw propertyFailure(new Error('Configured proxy was not created'), 'PROXY_CONFIGURATION');
+            }
         }
         catch (error) {
             const failure = propertyFailure(error, 'PROXY_CONFIGURATION');
-            await runtime.setValue('RUN_SUMMARY', preflightFailureSummary('PROXY_CONFIGURATION_FAILURE', failure.info, sources));
+            await runtime.setValue('RUN_SUMMARY', {
+                ...preflightFailureSummary('PROXY_CONFIGURATION_FAILURE', failure.info, sources),
+                connection: {
+                    requested: requestedConnection, effective: 'not-established',
+                    directFallbackUsed: false, directFallbackSucceeded: null, directFallbackReason: null,
+                },
+            });
             await runtime.setStatus(failure.message);
             throw failure;
         }
@@ -102,6 +114,8 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     const failedPageDiagnostics: Array<PropertyFailureInfo & { source: string; page: number }> = [];
     let requestAttempts = 0;
     let earlyStoppedPages = 0;
+    let primary99StatePages = 0;
+    const earlyStoppedSourcePages = { magicbricks: 0, '99acres': 0 };
     let decodedHtmlBytesRead = 0;
 
     log.info('Starting property scrape', {
@@ -134,16 +148,38 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
             const rowsNeeded = Math.min(input.maxResults - pushed, chargeableCount,
                 balanceFirstPass ? softCap - (sourceCounts.get(job.source) ?? 0) : input.maxResults - pushed);
             let parsedRecords: PropertyRecord[] = [];
+            let canonical99: Canonical99State | null = null;
+            const current99State = (html: string) => {
+                if (!canonical99 || canonical99.complete === false) {
+                    const alreadyRecognized = Boolean(canonical99);
+                    const nextState = readCanonical99State(html);
+                    const nativeState = rowsNeeded === 1 ? readInitial99State(html) : null;
+                    // If both schema-identified formats exist, the first primary
+                    // source frame wins regardless of network chunk boundaries.
+                    canonical99 = nativeState && (!nextState || nativeState.sourceStart! < nextState.sourceStart!)
+                        ? nativeState : nextState;
+                    if (canonical99 && !alreadyRecognized) primary99StatePages += 1;
+                }
+                return canonical99;
+            };
             const fetchOptions: FetchHtmlOptions = {
                 validate: html => {
-                    parsedRecords = job.source === 'magicbricks' ? parseMagicBricks(html, job) : parse99Acres(html, job);
+                    parsedRecords = job.source === 'magicbricks' ? parseMagicBricks(html, job) : parse99Acres(html, job, current99State(html));
                     return classifyPropertyPage(html, parsedRecords.length);
                 },
                 completePrefix: job.source === 'magicbricks'
-                    ? text => completeMagicPrefix(text, job, input, rowsNeeded, seen) : undefined,
+                    ? text => completeMagicPrefix(text, job, input, rowsNeeded, seen)
+                    // Keep the already tested batch transport unchanged. Cost work here
+                    // targets one requested row or a one-row remaining billing capacity.
+                    : rowsNeeded === 1 ? text => complete99Prefix(text, job, input, rowsNeeded, seen, current99State(text)) : undefined,
                 onChunk: bytes => { decodedHtmlBytesRead += bytes; },
-                onEarlyStop: () => { earlyStoppedPages += 1; },
-                onRequestAttempt: () => { requestAttempts += 1; },
+                onEarlyStop: () => { earlyStoppedPages += 1; earlyStoppedSourcePages[job.source] += 1; },
+                onRequestAttempt: () => {
+                    requestAttempts += 1;
+                    // A retry is a fresh response, not a continuation of prior state.
+                    canonical99 = null;
+                    effectiveConnection = requestedConnection;
+                },
             };
             await runtime.fetchPage(job.url, proxyConfiguration, fetchOptions);
             processedPages += 1;
@@ -243,12 +279,16 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
         }
     }
 
+    const terminalFailure = fatalBillingError ? propertyFailure(fatalBillingError, 'OUTPUT_BILLING_FAILURE')
+        : fatalProxyError ?? (!spendingLimitReached && pushed === 0 && (shouldFailEmptyRun(processedPages) || failedPages > 0)
+            ? zeroOutputFailure(failureCategories, failedPageDiagnostics, effectiveConnection, failedPages, requestAttempts, processedPages) : null);
     const coverage = {
         savedListings: pushed, processedPages, failedPages, spendingLimitReached,
         resultLimitReached: pushed >= input.maxResults,
         requestedSources: sources, sourcesWithSavedListings: [...sourceCounts.keys()],
         failedSearches: searchFailures.size, repeatedSearchPages: repeatedPages.size,
-        earlyStoppedPages, decodedHtmlBytesRead, requestAttempts, failureCategories, failedPageDiagnostics,
+        earlyStoppedPages, earlyStoppedSourcePages, primary99StatePages,
+        decodedHtmlBytesRead, requestAttempts, failureCategories, failedPageDiagnostics,
         connection: {
             requested: requestedConnection,
             effective: effectiveConnection,
@@ -256,11 +296,12 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
             directFallbackSucceeded: null,
             directFallbackReason: null,
         },
+        terminalFailure: terminalFailure?.info ?? null,
         stopReason: fatalBillingError ? 'OUTPUT_BILLING_FAILURE'
             : fatalProxyError ? 'PROXY_CONFIGURATION_FAILURE'
             : spendingLimitReached ? 'SPENDING_LIMIT'
                 : pushed >= input.maxResults ? 'RESULT_LIMIT'
-                    : processedPages === 0 ? 'SOURCE_FAILURE'
+                    : terminalFailure ? 'SOURCE_FAILURE'
                         : exhaustedSearches.size === new Set(jobs.map(job => job.searchKey)).size
                             ? 'SEARCH_EXHAUSTED' : 'PAGE_LIMIT',
         boundedSample: true,
@@ -268,6 +309,9 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     await runtime.setValue('RUN_SUMMARY', coverage);
     if (fatalBillingError) throw fatalBillingError;
     if (fatalProxyError) throw fatalProxyError;
+    // An empty successful search cannot prove that another failed search was
+    // empty. Do not commit an incomplete zero-output run as a watchlist baseline.
+    if (terminalFailure) throw terminalFailure;
     if (spendingLimitReached) {
         await runtime.setStatus(`Stopped at the user's spending limit after ${pushed} property listings`);
     }
@@ -279,8 +323,23 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
         } catch (error) {
             // Keep core results, but never label a failed persistent comparison as a successful baseline.
             const failure = propertyFailure(error, 'MONITOR_UPDATE_FAILURE');
-            await runtime.setValue('PROPERTY_REPORT', { historyCommitted: error instanceof PropertyMonitorError ? error.historyCommitted : false,
-                coverage, error: failure.message, failure: failure.info });
+            const failedCoverage = {
+                ...coverage, stopReason: 'MONITOR_UPDATE_FAILURE', terminalFailure: failure.info,
+            };
+            const historyCommitted = error instanceof PropertyMonitorError ? error.historyCommitted : false;
+            // Independent best-effort diagnostics must never replace the original
+            // monitor failure or hide its known/uncertain history commit state.
+            for (const [key, value] of [
+                ['RUN_SUMMARY', failedCoverage],
+                ['PROPERTY_REPORT', { historyCommitted, coverage: failedCoverage, error: failure.message, failure: failure.info }],
+            ] as const) {
+                try { await runtime.setValue(key, value); }
+                catch {
+                    log.warning('Monitor failure diagnostic could not be saved.', {
+                        key, category: failure.info.category, historyCommitted,
+                    });
+                }
+            }
             throw failure;
         }
     }
@@ -290,11 +349,6 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
             log.info('Property scrape stopped without requesting or saving more listings because the spending limit was reached.');
             return;
         }
-        if (shouldFailEmptyRun(processedPages)) {
-            throw new PropertyFailureError({ category: 'SOURCE_HTTP',
-                message: 'All property pages failed. See RUN_SUMMARY failure categories and response diagnostics; no listings were saved.' });
-        }
-
         await runtime.setStatus('Search completed successfully, but no listings matched the supplied filters.');
         log.info('Property scrape finished with no matching listings', { processedPages, failedPages });
         return;
@@ -308,12 +362,37 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     });
 }
 
+function zeroOutputFailure(categories: Record<string, number>, diagnostics: PropertyFailureInfo[],
+    connection: ObservedConnection, failedPages: number, requestAttempts: number, processedPages: number): PropertyFailureError {
+    const category = Object.keys(categories).length === 1 && diagnostics.length > 0
+        ? diagnostics[0].category : 'UNKNOWN';
+    const statuses = new Set(diagnostics.map(item => item.httpStatus));
+    // Page diagnostics are capped. Never infer a uniform HTTP status or total
+    // attempts from only the first 20 failures of a larger customer run.
+    const completeDiagnostics = diagnostics.length === failedPages;
+    const httpStatus = completeDiagnostics && statuses.size === 1 ? diagnostics[0]?.httpStatus : undefined;
+    const attempts = requestAttempts || (completeDiagnostics
+        ? diagnostics.reduce((total, item) => total + (item.attempts ?? 0), 0) : 0);
+    const blocked = category === 'SOURCE_BLOCKED' || httpStatus === 403 || httpStatus === 429;
+    const advice = blocked && connection === 'direct'
+        ? 'The portal rejected no-proxy access. Select Residential India or your permitted Indian proxy; access is not guaranteed.'
+        : blocked ? 'The portal rejected the configured route. Check proxy access and wait before another run; repeated runs are not a guaranteed fix.'
+            : category === 'SOURCE_MAINTENANCE' ? 'The portal returned maintenance pages; wait until source access recovers.'
+                : category === 'SOURCE_UNRECOGNIZED' ? 'The response was not recognized as listings or a confirmed empty search. Share this failed run for diagnosis.'
+                    : 'Check the per-page failure diagnostics before another run.';
+    const outcome = processedPages > 0 ? 'Property collection was incomplete; some searches failed' : 'All property pages failed';
+    return new PropertyFailureError({ category,
+        message: `${outcome} (${category}${httpStatus === undefined ? '' : `, HTTP ${httpStatus}`}; connection: ${connection}). No listings were saved. ${advice} See RUN_SUMMARY.`,
+        ...(httpStatus === undefined ? {} : { httpStatus }), ...(attempts ? { attempts } : {}),
+    });
+}
+
 function preflightFailureSummary(stopReason: string, failure: PropertyFailureInfo, sources: string[] = []) {
     return { savedListings: 0, processedPages: 0, failedPages: 0, spendingLimitReached: false,
         resultLimitReached: false, requestedSources: sources, sourcesWithSavedListings: [],
         failedSearches: 0, repeatedSearchPages: 0, earlyStoppedPages: 0, decodedHtmlBytesRead: 0,
         requestAttempts: 0, failureCategories: { [failure.category]: 1 }, failedPageDiagnostics: [],
-        preflightFailure: failure, stopReason, boundedSample: true };
+        preflightFailure: failure, terminalFailure: failure, stopReason, boundedSample: true };
 }
 
 function remainingPropertyCount(runtime: PropertyScrapeRuntime): number {
@@ -335,10 +414,12 @@ export function shouldStopFailedSearch(failedPages: number): boolean {
 function connectionPath(proxyConfiguration: Record<string, unknown> | undefined): ConnectionPath {
     if (Array.isArray(proxyConfiguration?.proxyUrls)) return 'custom-proxy';
     if (proxyConfiguration?.useApifyProxy === false) return 'direct';
-    const groups = Array.isArray(proxyConfiguration?.apifyProxyGroups)
+    // The installed SDK gives non-empty legacy groups/countryCode precedence.
+    const groups = Array.isArray(proxyConfiguration?.groups) && proxyConfiguration.groups.length > 0
+        ? proxyConfiguration.groups.map(String) : Array.isArray(proxyConfiguration?.apifyProxyGroups)
         ? proxyConfiguration.apifyProxyGroups.map(String) : [];
     return groups.length === 1 && groups[0].toUpperCase() === 'RESIDENTIAL'
-        && String(proxyConfiguration?.apifyProxyCountry ?? '').toUpperCase() === 'IN'
+        && String(proxyConfiguration?.countryCode || proxyConfiguration?.apifyProxyCountry || '').toUpperCase() === 'IN'
         ? 'recommended-residential-in' : 'custom-proxy';
 }
 
@@ -570,10 +651,14 @@ export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullabl
     for (let attempt = 1; attempt <= MAX_REQUEST_ATTEMPTS; attempt += 1) {
         let dispatcher: Dispatcher | undefined;
         let requestFailed = false;
+        let earlyStopped = false;
 
         try {
             try {
                 const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+                if (proxyConfiguration && (typeof proxyUrl !== 'string' || !proxyUrl.trim())) {
+                    throw new Error('Configured proxy returned no URL');
+                }
                 dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
             } catch (error) { throw propertyFailure(error, 'PROXY_CONFIGURATION', attempt); }
             options.onRequestAttempt?.();
@@ -592,7 +677,10 @@ export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullabl
                     httpStatus: response.status, attempts: attempt }, isRetryableHttpStatus(response.status), proxyAuth);
             }
 
-            const html = await readBoundedResponseText(response, MAX_HTML_BYTES, options);
+            const html = await readBoundedResponseText(response, MAX_HTML_BYTES, {
+                ...options,
+                onEarlyStop: () => { earlyStopped = true; options.onEarlyStop?.(); },
+            });
             const state = options.validate?.(html) ?? (looksBlocked(html) ? 'blocked' : 'listings');
             if (state === 'blocked' || state === 'unrecognized' || state === 'maintenance') {
                 // Do not retain source HTML, query strings, cookies or proxy credentials.
@@ -618,7 +706,7 @@ export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullabl
         } finally {
             // Destroy failed connections rather than waiting for a stalled tunnel
             // to drain. Cleanup errors must not hide the original safe category.
-            try { if (requestFailed) await dispatcher?.destroy(); else await dispatcher?.close(); }
+            try { if (requestFailed || earlyStopped) await dispatcher?.destroy(); else await dispatcher?.close(); }
             catch { log.warning('Property proxy connection cleanup failed.'); }
         }
         if (attempt < MAX_REQUEST_ATTEMPTS) await transport.delay(1000 * attempt + randomInt(250, 900));
@@ -747,10 +835,10 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
     return records;
 }
 
-function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
+export function parse99Acres(html: string, job: ScrapeJob, canonical = readCanonical99State(html)): PropertyRecord[] {
     const ldObjects = collectLdObjects(html);
     const propertyObjects = ldObjects.filter(is99PropertyObject);
-    const stateByUrl = extract99StateByUrl(html);
+    const stateByUrl = extract99StateByUrl(html, canonical);
     const records: PropertyRecord[] = [];
     const seenUrls = new Set<string>();
 
@@ -768,13 +856,23 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
         const bhk = extractBhk(`${rooms} ${title}`) ?? extractBhk(description);
         const floorSize = extractFloorSize(item.floorSize);
         const descriptionArea = extractArea(description);
+        const offerPrice = extractOfferPrice(item);
+        const ownTextPrice = extractPriceDisplay([description, title].filter(Boolean).join(' '));
+        const structuredPriceDisplay = offerPrice && ownTextPrice
+            && parseIndianMoney(ownTextPrice) === parseIndianMoney(offerPrice) ? ownTextPrice : offerPrice;
         const priceText = [
-            extractOfferPrice(item),
+            offerPrice,
             description,
             title,
-            extractTextNearUrl(html, url),
+            // A primary record's fields must not come from an adjacent listing.
+            canonical ? null : extractTextNearUrl(html, url),
         ].filter(Boolean).join(' ');
-        const priceDisplay = state.priceDisplay ?? extractPriceDisplay(priceText);
+        // A validated asking price in this listing's own structured Offer is
+        // stronger evidence than a generic text heuristic or a nearby card.
+        // Small INR rents are valid prices even without a published period.
+        // Retain a period/range only when this listing's own text corroborates
+        // the Offer amount, never by borrowing another listing's price text.
+        const priceDisplay = state.priceDisplay ?? structuredPriceDisplay ?? extractPriceDisplay(priceText);
         const stateArea = state.area ?? { value: null, unit: null };
         const price = state.price ?? parseIndianMoney(priceDisplay);
         const areaValue = stateArea.value ?? floorSize.value ?? descriptionArea.value;
@@ -784,7 +882,7 @@ function parse99Acres(html: string, job: ScrapeJob): PropertyRecord[] {
         const imageUrls = uniqueStrings([
             state.imageUrl,
             ...(state.imageUrls ?? []),
-            ...extract99AcresImages(html, url),
+            ...(canonical ? extract99ImageUrlsFromText(JSON.stringify(item.image ?? [])) : extract99AcresImages(html, url)),
         ]);
 
         records.push({
@@ -981,6 +1079,37 @@ export function completeMagicPrefix(
     return null;
 }
 
+export function complete99Prefix(
+    html: string, job: ScrapeJob, input: NormalizedInput, required: number, seen: ReadonlySet<string>,
+    canonical = readCanonical99State(html),
+): string | null {
+    if (job.source !== '99acres' || required !== 1 || !canonical) return null;
+    const rows = parse99Acres(html, job, canonical);
+    const unique = new Set<string>();
+    for (const row of rows) {
+        const key = propertyKey(row);
+        if (seen.has(key) || unique.has(key) || !passesPriceFilter(row, input)) continue;
+        unique.add(key);
+        const propertyUrl = new URL(row.propertyUrl);
+        // Never skip an earlier eligible row just because a later row has better fields.
+        // A complete own primary-state record and normalized area are prerequisites.
+        if (propertyUrl.protocol !== 'https:' || propertyUrl.username || propertyUrl.password || propertyUrl.port
+            || !['www.99acres.com', '99acres.com'].includes(propertyUrl.hostname)
+            || !canonical.byPath.has(propertyUrl.pathname.toLowerCase()) || !row.title
+            || row.price === null || row.price <= 0 || parseIndianMoney(row.priceDisplay) !== row.price
+            || squareFeet(row.area, row.areaUnit) === null) return null;
+        if (canonical.kind === 'initial-data') {
+            const own = JSON.parse(canonical.byPath.get(propertyUrl.pathname.toLowerCase())!);
+            if (own.PREFERENCE !== (job.transactionType === 'rent' ? 'R' : 'S')) return null;
+        }
+        // This branch uses only the complete own primary record and closed JSON-LD.
+        // No nearby DOM/image/deposit window is needed or allowed to enrich it.
+        if (html.length < canonical.end) return null;
+        return canonical.kind === 'initial-data' ? html.slice(0, canonical.end) : html;
+    }
+    return null;
+}
+
 function extractMagicTitle(text: string, city: string): string | null {
     const cityIndex = text.toLowerCase().indexOf(city.toLowerCase());
     if (cityIndex > 20) return cleanText(text.slice(0, cityIndex + city.length));
@@ -1095,8 +1224,14 @@ function is99ProjectUrl(url: string): boolean {
     return /npxid-/i.test(url);
 }
 
-function extract99StateByUrl(html: string): Map<string, StateListing> {
+function extract99StateByUrl(html: string, canonical: Canonical99State | null): Map<string, StateListing> {
     const map = new Map<string, StateListing>();
+    // A recognized complete primary snapshot outranks unrelated later scripts.
+    // Ambiguous/missing snapshots retain the existing full-response legacy path.
+    if (canonical) {
+        for (const [path, own] of canonical.byPath) map.set(path, extract99StateListing(own, `https://www.99acres.com${path}`));
+        return map;
+    }
     const pdUrlRe = /"PD_URL"\s*:\s*"((?:\\.|[^"\\])+)"/g;
     let match: RegExpExecArray | null;
 
@@ -1106,6 +1241,13 @@ function extract99StateByUrl(html: string): Map<string, StateListing> {
         if (!url) continue;
 
         const windowText = html.slice(Math.max(0, match.index - 5000), Math.min(html.length, match.index + 4500));
+        map.set(new URL(url).pathname.toLowerCase(), extract99StateListing(windowText, url));
+    }
+
+    return map;
+}
+
+function extract99StateListing(windowText: string, url: string): StateListing {
         const priceDisplay = captureJsonString(windowText, 'PRICE_IN_WORDS');
         const minPrice = finiteNumber(captureJsonString(windowText, 'MIN_PRICE'));
         const area = extract99StateArea(windowText);
@@ -1118,7 +1260,7 @@ function extract99StateByUrl(html: string): Map<string, StateListing> {
             'CLASS',
         ]);
 
-        map.set(new URL(url).pathname.toLowerCase(), {
+        return {
             price: minPrice,
             priceDisplay,
             area,
@@ -1146,10 +1288,7 @@ function extract99StateByUrl(html: string): Map<string, StateListing> {
             imageUrls,
             propertyUrl: url,
             propertyType,
-        });
-    }
-
-    return map;
+        };
 }
 
 function find99StateForUrl(
@@ -1164,7 +1303,8 @@ function find99StateForUrl(
     if (!id) return {};
 
     for (const [statePath, state] of stateByUrl.entries()) {
-        if (statePath.toLowerCase().includes(id)) return state;
+        if (extract99AcresId(statePath)?.toLowerCase() === id
+            && /npxid-/i.test(statePath) === /npxid-/i.test(url)) return state;
     }
 
     return {};
@@ -1181,7 +1321,9 @@ function extract99StateArea(windowText: string): { value: number | null; unit: s
         const value = finiteNumber(captureJsonString(windowText, areaKey));
         if (value !== null) {
             const unit = cleanText(captureJsonString(windowText, unitKey)) || 'sqft';
-            return { value, unit: /sq/i.test(unit) ? 'sqft' : unit };
+            // Preserve published units so squareFeet can convert square metres/
+            // yards correctly instead of treating every "sq" label as feet.
+            return { value, unit };
         }
     }
 
@@ -1363,10 +1505,12 @@ function extractMagicImages(chunk: string): string[] {
 
 function extractOfferPrice(item: AnyObject): string | null {
     const offers = asObject(item.offers);
-    const price = asString(offers.price);
-    const currency = asString(offers.priceCurrency) || 'INR';
-    if (!price) return null;
-    return `${currency} ${price}`;
+    const price = cleanText(asString(offers.price));
+    const currency = (asString(offers.priceCurrency) || 'INR').toUpperCase();
+    if (currency !== 'INR' || !price
+        || !/^\d+(?:,\d+)*(?:\.\d+)?(?:\s*(?:Lac|Lakh|Cr|Crore))?$/i.test(price)
+        || (parseIndianMoney(price) ?? 0) <= 0) return null;
+    return `INR ${price}`;
 }
 
 function extractTextNearUrl(html: string, url: string): string {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { ProxyConfiguration } from 'apify';
 import { normalizeInput } from './input.js';
 
 test('uses a one-result Mumbai MagicBricks Residential India default', () => {
@@ -105,6 +106,42 @@ test('rejects inverted price ranges before scraping', () => {
 test('preserves explicit proxy-off input', () => {
     const input = normalizeInput({ proxyConfiguration: { useApifyProxy: false } });
     assert.deepEqual(input.proxyConfiguration, { useApifyProxy: false });
+});
+
+test('an empty custom-proxy editor list does not bypass the recommended Apify route', async () => {
+    for (const configuration of [{ useApifyProxy: true, proxyUrls: [] }]) {
+        const normalized = normalizeInput({ proxyConfiguration: configuration }).proxyConfiguration!;
+        assert.deepEqual(normalized, {
+            useApifyProxy: true,
+            apifyProxyGroups: ['RESIDENTIAL'],
+            apifyProxyCountry: 'IN',
+        });
+        // Construction/URL generation only; no initialization or proxy traffic.
+        const proxy = new ProxyConfiguration({ ...normalized, password: 'offline-test' });
+        const username = new URL((await proxy.newUrl())!).username;
+        assert.match(username, /groups-RESIDENTIAL/);
+        assert.match(username, /country-IN/);
+    }
+    assert.deepEqual(normalizeInput({ proxyConfiguration: {
+        useApifyProxy: false, proxyUrls: [],
+    } }).proxyConfiguration, { useApifyProxy: false });
+    assert.throws(() => normalizeInput({ proxyConfiguration: { proxyUrls: [] } }), /explicit useApifyProxy choice/);
+});
+
+test('a real custom proxy is preserved without adding incompatible Apify defaults', () => {
+    const configuration = { useApifyProxy: false, proxyUrls: ['http://user:password@proxy.example:8000'] };
+    assert.deepEqual(normalizeInput({ proxyConfiguration: configuration }).proxyConfiguration, configuration);
+});
+
+test('invalid custom proxy entries fail safely instead of requesting a direct page', () => {
+    for (const proxyUrls of [[null], [''], ['private-password'], ['socks5://user:private-password@proxy.example:8000']]) {
+        assert.throws(() => normalizeInput({ proxyConfiguration: { proxyUrls } }), error => {
+            assert.ok(error instanceof Error);
+            assert.match(error.message, /proxyUrls.*HTTP.*proxy/i);
+            assert.doesNotMatch(error.message, /private-password|proxy\.example|user:/);
+            return true;
+        });
+    }
 });
 
 test('accepts common API aliases without weakening bounded normalization', () => {

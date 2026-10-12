@@ -140,10 +140,37 @@ function normalizeMoneyFilter(value: unknown, field: string): number | null {
 
 function normalizeProxyConfiguration(input: Record<string, unknown> | undefined): Record<string, unknown> {
     if (!input) return { ...DEFAULT_PROXY };
-    if (input.useApifyProxy === false || Array.isArray(input.proxyUrls)) return { ...input };
+    const configuration = { ...input };
+    if (configuration.useApifyProxy !== undefined && typeof configuration.useApifyProxy !== 'boolean') {
+        invalidInput('proxyConfiguration.useApifyProxy must be true or false.');
+    }
+    if (configuration.proxyUrls !== undefined) {
+        if (!Array.isArray(configuration.proxyUrls)) invalidInput('proxyUrls must be a list of HTTP or HTTPS proxy URLs.');
+        if (configuration.proxyUrls.length === 0) {
+            // An empty editor list is not a custom route. Preserve the explicit
+            // Apify/off selection; do not infer permission to buy proxy traffic.
+            if (configuration.useApifyProxy === undefined) {
+                invalidInput('Empty proxyUrls requires an explicit useApifyProxy choice: true for Apify Proxy, or false for no proxy.');
+            }
+            delete configuration.proxyUrls;
+        } else {
+            for (const value of configuration.proxyUrls) {
+                let url: URL;
+                try {
+                    if (typeof value !== 'string' || !value.trim()) throw new Error();
+                    url = new URL(value);
+                    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname) throw new Error();
+                } catch {
+                    invalidInput('proxyUrls must contain complete HTTP or HTTPS proxy URLs; blank and null entries are not supported.');
+                }
+            }
+            return configuration;
+        }
+    }
+    if (configuration.useApifyProxy === false) return configuration;
     return {
         ...DEFAULT_PROXY,
-        ...input,
+        ...configuration,
     };
 }
 

@@ -8,7 +8,7 @@
     "start": "node dist/main.js",
     "lint": "node ./node_modules/typescript/bin/tsc --noEmit",
     "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
-    "test": "npm run build && node --test dist/input.test.js dist/billing.test.js dist/routes.test.js dist/property-intelligence.test.js dist/property-transfer.test.js dist/collector.test.js"
+    "test": "npm run build && node --test dist/input.test.js dist/billing.test.js dist/routes.test.js dist/property-intelligence.test.js dist/property-transfer.test.js dist/collector.test.js dist/scenario-matrix.test.js dist/99acres-state.test.js dist/99acres-initial-state.test.js"
   },
   "engines": {
     "node": ">=24.0.0"

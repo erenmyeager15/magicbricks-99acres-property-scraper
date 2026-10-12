@@ -155,6 +155,26 @@ test('proxy URL generation failures never dispatch a property request or repeat 
     assert.equal(requests, 0);
 });
 
+test('a configured proxy returning no URL never silently makes a direct request', async () => {
+    for (const proxyUrl of [undefined, '', '   ']) {
+        let requests = 0;
+        let urls = 0;
+        await assert.rejects(fetchHtml('https://www.magicbricks.com/', {
+            newUrl: async () => { urls += 1; return proxyUrl; },
+        }, {}, {
+            fetch: (async () => { requests += 1; return new Response('Unexpected direct response'); }) as typeof fetch,
+            delay: async () => { throw new Error('No retry for a missing configured proxy'); },
+        }), error => {
+            assert.ok(error instanceof PropertyFailureError);
+            assert.equal(error.info.category, 'PROXY_CONFIGURATION');
+            assert.equal(error.stopRun, true);
+            return true;
+        });
+        assert.equal(requests, 0);
+        assert.equal(urls, 1);
+    }
+});
+
 test('response cleanup cannot turn permanent proxy authorization into a retryable network error', async () => {
     const response = { ok: false, status: 407,
         body: { cancel: async () => { throw new Error('private-cleanup-secret'); } } } as unknown as Response;

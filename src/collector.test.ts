@@ -3,6 +3,7 @@ import test from 'node:test';
 import { Response, type fetch } from 'undici';
 import { fetchHtml, scrapeProperties, type PropertyScrapeRuntime } from './routes.js';
 import { commitPropertyMonitor, PropertyMonitorError } from './property-monitor.js';
+import { PropertyFailureError } from './failures.js';
 import type { PropertyRecord } from './types.js';
 
 function listings(ids: number[], price = '85 Lakh'): string {
@@ -26,7 +27,11 @@ function harness(pages: Array<string | Error>, budget = Infinity) {
     let recoveries = 0;
     let monitorCalls = 0;
     const runtime: PropertyScrapeRuntime = {
-        createProxy: async () => { proxyCalls += 1; return undefined; },
+        createProxy: async configuration => {
+            proxyCalls += 1;
+            return configuration?.useApifyProxy === false && !Array.isArray(configuration.proxyUrls)
+                ? undefined : { newUrl: async () => 'http://127.0.0.1:9999' };
+        },
         remainingChargeCount: () => remaining,
         fetchPage: async (url, proxy, options) => {
             if (options.completePrefix) {
@@ -238,6 +243,110 @@ test('proxy setup failure retains safe diagnostics before any property request',
     assert.doesNotMatch(JSON.stringify(check.summary()), /private-password|proxy\.example|user:/);
 });
 
+test('a missing configured proxy fails preflight instead of falling back to direct traffic', async () => {
+    const check = harness([]);
+    check.runtime.createProxy = async () => undefined;
+    await assert.rejects(scrapeProperties({ maxResults: 1 }, check.runtime), /configured proxy could not be initialized/);
+    assert.equal(check.urls.length, 0);
+    assert.equal(check.summary().stopReason, 'PROXY_CONFIGURATION_FAILURE');
+    assert.equal(check.summary().requestAttempts, 0);
+    assert.deepEqual(check.summary().connection, {
+        requested: 'recommended-residential-in', effective: 'not-established',
+        directFallbackUsed: false, directFallbackSucceeded: null, directFallbackReason: null,
+    });
+});
+
+test('custom-proxy failure is diagnosed as custom even with useApifyProxy switched off', async () => {
+    const check = harness([]);
+    check.runtime.createProxy = async () => undefined;
+    await assert.rejects(scrapeProperties({ proxyConfiguration: {
+        useApifyProxy: false, proxyUrls: ['http://user:private-password@proxy.example:8000'],
+    } }, check.runtime));
+    assert.equal(check.urls.length, 0);
+    assert.equal((check.summary().connection as { requested: string }).requested, 'custom-proxy');
+    assert.doesNotMatch(JSON.stringify(check.summary()), /private-password|proxy\.example|user:/);
+});
+
+test('missing proxy URL retains zero-traffic diagnostics and never advances monitoring', async () => {
+    const check = harness([]);
+    check.runtime.createProxy = async () => ({ newUrl: async () => undefined });
+    await assert.rejects(scrapeProperties({ source: 'both', maxResults: 100,
+        cities: ['Mumbai', 'Pune'], monitorStoreName: 'missing-route',
+    }, check.runtime), /configured proxy could not be initialized/);
+    assert.equal(check.urls.length, 0);
+    assert.equal(check.summary().requestAttempts, 0);
+    assert.equal((check.summary().connection as { effective: string }).effective, 'not-established');
+    assert.equal((check.summary().terminalFailure as { category: string }).category, 'PROXY_CONFIGURATION');
+    assert.equal(check.counts().monitorCalls, 0);
+});
+
+test('an explicitly proxy-off run still uses direct access when the portal permits it', async () => {
+    const check = harness([listings([1])]);
+    check.runtime.createProxy = async () => undefined;
+    await scrapeProperties({ proxyConfiguration: { useApifyProxy: false } }, check.runtime);
+    assert.equal(check.rows.length, 1);
+    assert.equal((check.summary().connection as { effective: string }).effective, 'direct');
+});
+
+test('an all-failed no-proxy 403 run preserves the actionable terminal cause', async () => {
+    const check = harness([]);
+    check.runtime.createProxy = async () => undefined;
+    let attempts = 0;
+    check.runtime.fetchPage = (url, proxy, options) => fetchHtml(url, proxy, options, {
+        fetch: (async () => {
+            attempts += 1;
+            return new Response('Forbidden', { status: 403 });
+        }) as typeof fetch,
+        delay: async () => {},
+    });
+    await assert.rejects(scrapeProperties({ proxyConfiguration: { useApifyProxy: false } }, check.runtime), error => {
+        assert.ok(error instanceof PropertyFailureError);
+        assert.equal(error.info.category, 'SOURCE_HTTP');
+        assert.equal(error.info.httpStatus, 403);
+        assert.match(error.message, /HTTP 403.*direct/);
+        assert.match(error.message, /Residential India/);
+        return true;
+    });
+    assert.equal(attempts, 3);
+    assert.equal(check.rows.length, 0);
+    assert.equal((check.summary().terminalFailure as { httpStatus: number }).httpStatus, 403);
+    assert.equal(check.summary().requestAttempts, 3);
+    assert.equal(check.counts().monitorCalls, 0);
+});
+
+test('legacy SDK proxy groups and country overrides are not labelled Residential India', async () => {
+    const check = harness([listings([1])]);
+    await scrapeProperties({ proxyConfiguration: { groups: ['DATACENTER'], countryCode: 'US' } }, check.runtime);
+    assert.equal(check.rows.length, 1);
+    assert.deepEqual(check.summary().connection, {
+        requested: 'custom-proxy', effective: 'custom-proxy',
+        directFallbackUsed: false, directFallbackSucceeded: null, directFallbackReason: null,
+    });
+});
+
+test('mixed failures beyond the diagnostic cap are not misreported as one HTTP cause', async () => {
+    const check = harness([]);
+    let pages = 0;
+    check.runtime.fetchPage = async () => {
+        pages += 1;
+        throw new PropertyFailureError(pages <= 20
+            ? { category: 'SOURCE_HTTP', message: 'HTTP 403', httpStatus: 403, attempts: 3 }
+            : { category: 'REQUEST_TIMEOUT', message: 'The property request timed out.', attempts: 3 });
+    };
+    await assert.rejects(scrapeProperties({ source: 'both', maxResults: 100,
+        cities: Array.from({ length: 11 }, (_, i) => `City ${i}`),
+    }, check.runtime), error => {
+        assert.ok(error instanceof PropertyFailureError);
+        assert.equal(error.info.category, 'UNKNOWN');
+        assert.equal(error.info.httpStatus, undefined);
+        assert.equal(error.info.attempts, undefined);
+        return true;
+    });
+    assert.equal(pages, 44);
+    assert.equal((check.summary().failedPageDiagnostics as unknown[]).length, 20);
+    assert.deepEqual(check.summary().failureCategories, { SOURCE_HTTP: 20, REQUEST_TIMEOUT: 24 });
+});
+
 test('permanent proxy authentication failure stops all remaining cities and portals', async () => {
     const check = harness([new TypeError('fetch failed private-secret', {
         cause: new Error('Proxy response (407) !== 200 when HTTP Tunneling'),
@@ -283,6 +392,80 @@ test('monitor failure preserves delivered rows but is never reported as a succes
         /requested monitor update failed/);
     assert.equal(check.rows.length, 1);
     assert.equal((check.values.get('PROPERTY_REPORT') as { historyCommitted: boolean }).historyCommitted, false);
+    assert.equal(check.summary().stopReason, 'MONITOR_UPDATE_FAILURE');
+    assert.equal((check.summary().terminalFailure as { category: string }).category, 'MONITOR_UPDATE_FAILURE');
+});
+
+for (const historyCommitted of [false, true, 'unknown'] as const) {
+    for (const failedWrite of ['RUN_SUMMARY', 'PROPERTY_REPORT', 'both'] as const) {
+        test(`monitor failure keeps its cause and independently attempts diagnostics (${historyCommitted}, ${failedWrite})`, async () => {
+            const check = harness([listings([1])]);
+            const originalError = new PropertyMonitorError('Simulated private storage failure', historyCommitted);
+            check.runtime.saveMonitor = async () => { throw originalError; };
+            let summaryWrites = 0;
+            const diagnosticWrites: string[] = [];
+            check.runtime.setValue = async (key, value) => {
+                if (key === 'RUN_SUMMARY') summaryWrites += 1;
+                if (key === 'PROPERTY_REPORT' || summaryWrites > 1) {
+                    diagnosticWrites.push(key);
+                    if (key === failedWrite || failedWrite === 'both') throw new Error('private diagnostic storage error');
+                }
+                check.values.set(key, structuredClone(value));
+            };
+            await assert.rejects(scrapeProperties({ maxResults: 1, monitorStoreName: 'diagnostic-watch' }, check.runtime), error => {
+                assert.ok(error instanceof PropertyFailureError);
+                assert.equal(error.info.category, 'MONITOR_UPDATE_FAILURE');
+                assert.equal(error.cause, originalError);
+                return true;
+            });
+            assert.deepEqual(diagnosticWrites, ['RUN_SUMMARY', 'PROPERTY_REPORT']);
+            assert.equal(check.rows.length, 1);
+            if (failedWrite === 'RUN_SUMMARY') {
+                const report = check.values.get('PROPERTY_REPORT') as { historyCommitted: boolean | 'unknown'; coverage: { stopReason: string } };
+                assert.equal(report.historyCommitted, historyCommitted);
+                assert.equal(report.coverage.stopReason, 'MONITOR_UPDATE_FAILURE');
+            }
+            if (failedWrite === 'PROPERTY_REPORT') assert.equal(check.summary().stopReason, 'MONITOR_UPDATE_FAILURE');
+            assert.doesNotMatch(JSON.stringify([...check.values.values()]), /private storage failure|private diagnostic/);
+        });
+    }
+}
+
+test('an empty portal plus a failed portal is incomplete, not a successful empty watchlist', async () => {
+    const check = harness(['No matching properties found']);
+    const fetchPage = check.runtime.fetchPage;
+    check.runtime.fetchPage = async (url, proxy, options) => {
+        if (new URL(url).hostname.endsWith('99acres.com')) {
+            throw new PropertyFailureError({ category: 'SOURCE_HTTP', message: 'HTTP 403', httpStatus: 403, attempts: 3 });
+        }
+        return fetchPage(url, proxy, options);
+    };
+    await assert.rejects(scrapeProperties({ source: 'both', maxResults: 25, monitorStoreName: 'incomplete-empty' }, check.runtime), error => {
+        assert.ok(error instanceof PropertyFailureError);
+        assert.equal(error.info.category, 'SOURCE_HTTP');
+        assert.equal(error.info.httpStatus, 403);
+        assert.match(error.message, /incomplete/i);
+        assert.doesNotMatch(error.message, /All property pages failed/);
+        return true;
+    });
+    assert.equal(check.rows.length, 0);
+    assert.equal(check.summary().processedPages, 1);
+    assert.equal(check.summary().failedPages, 2);
+    assert.equal(check.summary().stopReason, 'SOURCE_FAILURE');
+    assert.equal((check.summary().terminalFailure as { httpStatus: number }).httpStatus, 403);
+    assert.equal(check.counts().monitorCalls, 0);
+    assert.ok(!check.statuses.some(message => /no listings matched/i.test(message)));
+});
+
+test('fully confirmed-empty portals may save an honest empty watchlist', async () => {
+    const check = harness(['No matching properties found', 'No matching properties found']);
+    await scrapeProperties({ source: 'both', maxResults: 25, monitorStoreName: 'confirmed-empty' }, check.runtime);
+    assert.equal(check.rows.length, 0);
+    assert.equal(check.summary().processedPages, 2);
+    assert.equal(check.summary().failedPages, 0);
+    assert.equal(check.summary().terminalFailure, null);
+    assert.equal(check.counts().monitorCalls, 1);
+    assert.match(check.statuses.at(-1)!, /no listings matched/i);
 });
 
 test('two full watchlist runs commit baseline then repeat history and CSV without platform writes', async () => {
