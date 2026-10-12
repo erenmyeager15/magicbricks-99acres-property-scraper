@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { normalizeInput } from './input.js';
 
@@ -121,6 +122,21 @@ test('accepts common API aliases without weakening bounded normalization', () =>
     assert.equal(input.maxResults, 25);
     assert.equal(input.searchUrls.length, 1);
     assert.equal(input.searchUrls[0].city, 'Pune');
+});
+
+test('keeps UI prefills without schema-injecting primary fields over API aliases', () => {
+    const schema = JSON.parse(readFileSync('INPUT_SCHEMA.json', 'utf8')) as {
+        properties: Record<string, { default?: unknown; prefill?: unknown }>;
+    };
+
+    assert.equal(schema.properties.cities.default, undefined);
+    assert.deepEqual(schema.properties.cities.prefill, ['Mumbai']);
+    assert.equal(schema.properties.maxResults.default, undefined);
+    assert.equal(schema.properties.maxResults.prefill, 1);
+
+    const input = normalizeInput({ city: 'Pune', maxItems: 5 });
+    assert.deepEqual(input.cities, ['Pune']);
+    assert.equal(input.maxResults, 5);
 });
 
 test('accepts one city string and one search URL string from API clients', () => {

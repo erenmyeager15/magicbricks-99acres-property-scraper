@@ -90,7 +90,7 @@ Cost-control tips:
 | `monitorStoreName` | string | no | disabled | Stable watchlist name, 1-63 letters, digits, underscores or hyphens. Reuse only with the same search/filter/limit inputs. |
 | `priceChangeThresholdPercent` | number | no | `5` | Comparable price-change alert threshold, 0-100%. Used only with monitoring. |
 
-API compatibility: `city` can supply one city, `maxItems` can supply the result limit, and `startUrls`/`searchUrl` can supply standard URL strings (including `{ "url": "..." }` entries). The documented fields above take precedence when they contain values. All aliases use the same limits and URL validation.
+API compatibility: `city` can supply one city, `maxItems` can supply the result limit, and `startUrls`/`searchUrl` can supply standard URL strings (including `{ "url": "..." }` entries). The UI still prefills Mumbai and one result, while API requests that use aliases are not overwritten by schema-injected primary defaults. Explicit documented fields take precedence when supplied. All aliases use the same limits and URL validation.
 
 ## Example Input
 
