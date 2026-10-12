@@ -27,7 +27,6 @@ export interface NormalizedInput {
     maxPrice: number | null;
     maxResults: number;
     proxyConfiguration?: Record<string, unknown>;
-    allowRecommendedDirectFallback: boolean;
     monitorStoreName: string | null;
     priceChangeThresholdPercent: number;
 }

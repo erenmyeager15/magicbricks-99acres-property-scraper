@@ -232,47 +232,10 @@ test('confirmed empty search remains a genuine empty result, not an outage or bu
 test('proxy setup failure retains safe diagnostics before any property request', async () => {
     const check = harness([]);
     check.runtime.createProxy = async () => { throw new Error('Proxy authentication failed: http://user:private-password@proxy.example'); };
-    await assert.rejects(scrapeProperties({ cities: ['Mumbai', 'Pune'], maxResults: 50,
-        proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ['DATACENTER'] } }, check.runtime));
+    await assert.rejects(scrapeProperties({ cities: ['Mumbai', 'Pune'], maxResults: 50 }, check.runtime));
     assert.equal(check.urls.length, 0);
     assert.equal(check.summary().stopReason, 'PROXY_CONFIGURATION_FAILURE');
     assert.doesNotMatch(JSON.stringify(check.summary()), /private-password|proxy\.example|user:/);
-});
-
-test('recommended proxy setup failure uses one bounded direct fallback', async () => {
-    const check = harness([listings([1])]);
-    check.runtime.createProxy = async () => { throw new Error('Proxy authentication failed: private-password'); };
-    await scrapeProperties({ maxResults: 1 }, check.runtime);
-    assert.equal(check.urls.length, 1);
-    assert.equal(check.rows.length, 1);
-    assert.deepEqual(check.summary().connection, {
-        requested: 'recommended-residential-in',
-        effective: 'direct',
-        directFallbackUsed: true,
-        directFallbackSucceeded: true,
-        directFallbackReason: {
-            category: 'PROXY_AUTHENTICATION',
-            message: 'Proxy authorization failed. Check the configured proxy credentials and access; rotating the same credentials will not fix this.',
-        },
-    });
-    assert.doesNotMatch(JSON.stringify(check.summary()), /private-password/);
-});
-
-test('recommended proxy authorization failure retries the page direct once and switches the run', async () => {
-    const proxyFailure = new TypeError('fetch failed private-secret', {
-        cause: new Error('Proxy response (407) !== 200 when HTTP Tunneling'),
-    });
-    const check = harness([proxyFailure, listings([1])]);
-    check.runtime.createProxy = async () => ({ newUrl: async () => 'http://user:private-password@127.0.0.1:8000' });
-    await scrapeProperties({ maxResults: 1 }, check.runtime);
-    assert.equal(check.urls.length, 2);
-    assert.equal(check.rows.length, 1);
-    const connection = check.summary().connection as Record<string, unknown>;
-    assert.equal(connection.effective, 'direct');
-    assert.equal(connection.directFallbackUsed, true);
-    assert.equal(connection.directFallbackSucceeded, true);
-    assert.deepEqual(check.summary().failureCategories, {});
-    assert.doesNotMatch(JSON.stringify(check.summary()), /private-secret|127\.0\.0\.1|user:/);
 });
 
 test('permanent proxy authentication failure stops all remaining cities and portals', async () => {

@@ -147,18 +147,6 @@ function normalizeProxyConfiguration(input: Record<string, unknown> | undefined)
     };
 }
 
-function isRecommendedProxyConfiguration(input: Record<string, unknown> | undefined): boolean {
-    if (!input) return true;
-    const keys = Object.keys(input).filter(key => input[key] !== undefined);
-    if (keys.some(key => !['useApifyProxy', 'apifyProxyGroups', 'apifyProxyCountry'].includes(key))) return false;
-    if (input.useApifyProxy === false || Array.isArray(input.proxyUrls)) return false;
-    const groups = input.apifyProxyGroups;
-    const normalizedGroups = Array.isArray(groups) ? groups.map(String) : ['RESIDENTIAL'];
-    return normalizedGroups.length === 1
-        && normalizedGroups[0].toUpperCase() === 'RESIDENTIAL'
-        && String(input.apifyProxyCountry ?? 'IN').toUpperCase() === 'IN';
-}
-
 function normalizeCities(value: unknown): string[] {
     if (value === undefined || value === null) return DEFAULT_CITIES;
     const values = Array.isArray(value) ? value : [value];
@@ -225,7 +213,6 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
         maxPrice,
         maxResults,
         proxyConfiguration: normalizeProxyConfiguration(input?.proxyConfiguration),
-        allowRecommendedDirectFallback: isRecommendedProxyConfiguration(input?.proxyConfiguration),
         monitorStoreName,
         priceChangeThresholdPercent,
     };

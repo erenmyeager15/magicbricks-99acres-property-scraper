@@ -83,33 +83,17 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     // An exhausted limit is a requested stop, not a failed or empty source search.
     let spendingLimitReached = remainingPropertyCount(runtime) === 0;
     let proxyConfiguration: PageProxy;
-    const requestedConnection: ConnectionPath = input.allowRecommendedDirectFallback
-        ? 'recommended-residential-in'
-        : Array.isArray(input.proxyConfiguration?.proxyUrls) ? 'custom-proxy'
-            : input.proxyConfiguration?.useApifyProxy === false ? 'direct' : 'custom-proxy';
-    let effectiveConnection: ConnectionPath = requestedConnection;
-    let directFallbackUsed = false;
-    let directFallbackSucceeded: boolean | null = null;
-    let directFallbackReason: PropertyFailureInfo | null = null;
+    const requestedConnection = connectionPath(input.proxyConfiguration);
+    const effectiveConnection = requestedConnection;
     if (!spendingLimitReached) {
         try {
             proxyConfiguration = await runtime.createProxy(input.proxyConfiguration);
-            if (!proxyConfiguration) effectiveConnection = 'direct';
         }
         catch (error) {
             const failure = propertyFailure(error, 'PROXY_CONFIGURATION');
-            if (input.allowRecommendedDirectFallback) {
-                proxyConfiguration = undefined;
-                effectiveConnection = 'direct';
-                directFallbackUsed = true;
-                directFallbackReason = failure.info;
-                await runtime.setStatus('Recommended India proxy unavailable; trying a bounded direct connection.');
-                log.warning('Recommended proxy initialization failed; trying the safe direct fallback.', failure.info);
-            } else {
-                await runtime.setValue('RUN_SUMMARY', preflightFailureSummary('PROXY_CONFIGURATION_FAILURE', failure.info, sources));
-                await runtime.setStatus(failure.message);
-                throw failure;
-            }
+            await runtime.setValue('RUN_SUMMARY', preflightFailureSummary('PROXY_CONFIGURATION_FAILURE', failure.info, sources));
+            await runtime.setStatus(failure.message);
+            throw failure;
         }
     }
     let fatalBillingError: Error | null = null;
@@ -161,38 +145,7 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
                 onEarlyStop: () => { earlyStoppedPages += 1; },
                 onRequestAttempt: () => { requestAttempts += 1; },
             };
-            try {
-                await runtime.fetchPage(job.url, proxyConfiguration, fetchOptions);
-            } catch (error) {
-                const firstFailure = propertyFailure(error);
-                if (!shouldTryRecommendedDirectFallback(
-                    input.allowRecommendedDirectFallback,
-                    directFallbackUsed,
-                    proxyConfiguration,
-                    firstFailure.info,
-                )) throw firstFailure;
-
-                directFallbackUsed = true;
-                directFallbackReason = firstFailure.info;
-                parsedRecords = [];
-                await runtime.setStatus('Recommended India proxy was rejected; trying one bounded direct connection.');
-                log.warning('Recommended proxy path failed; trying the safe direct fallback.', firstFailure.info);
-                try {
-                    await runtime.fetchPage(job.url, undefined, fetchOptions);
-                    proxyConfiguration = undefined;
-                    effectiveConnection = 'direct';
-                    directFallbackSucceeded = true;
-                } catch (directError) {
-                    directFallbackSucceeded = false;
-                    // A permanent proxy failure would affect every remaining job. If the
-                    // bounded direct attempt also fails, retain that original stop signal.
-                    if (firstFailure.stopRun) throw firstFailure;
-                    throw directError;
-                }
-            }
-            if (directFallbackUsed && effectiveConnection === 'direct' && directFallbackSucceeded === null) {
-                directFallbackSucceeded = true;
-            }
+            await runtime.fetchPage(job.url, proxyConfiguration, fetchOptions);
             processedPages += 1;
 
             if (parsedRecords.length === 0) {
@@ -259,9 +212,6 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
         } catch (error) {
             // Billing/output failures are not portal failures and must not trigger source recovery.
             if (fatalBillingError) break;
-            if (directFallbackUsed && effectiveConnection === 'direct' && directFallbackSucceeded === null) {
-                directFallbackSucceeded = false;
-            }
             attemptedSources.add(job.source);
             failedPages += 1;
             const failure = propertyFailure(error);
@@ -302,9 +252,9 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
         connection: {
             requested: requestedConnection,
             effective: effectiveConnection,
-            directFallbackUsed,
-            directFallbackSucceeded,
-            directFallbackReason,
+            directFallbackUsed: false,
+            directFallbackSucceeded: null,
+            directFallbackReason: null,
         },
         stopReason: fatalBillingError ? 'OUTPUT_BILLING_FAILURE'
             : fatalProxyError ? 'PROXY_CONFIGURATION_FAILURE'
@@ -382,17 +332,14 @@ export function shouldStopFailedSearch(failedPages: number): boolean {
     return failedPages >= 2;
 }
 
-export function shouldTryRecommendedDirectFallback(
-    allowed: boolean,
-    alreadyUsed: boolean,
-    proxyConfiguration: PageProxy,
-    failure: PropertyFailureInfo,
-): boolean {
-    if (!allowed || alreadyUsed || !proxyConfiguration) return false;
-    if (['PROXY_CONFIGURATION', 'PROXY_AUTHENTICATION', 'SOURCE_BLOCKED', 'SOURCE_UNRECOGNIZED',
-        'REQUEST_TIMEOUT', 'NETWORK_ERROR'].includes(failure.category)) return true;
-    if (failure.category !== 'SOURCE_HTTP') return false;
-    return failure.httpStatus === 403 || failure.httpStatus === 429 || (failure.httpStatus ?? 0) >= 500;
+function connectionPath(proxyConfiguration: Record<string, unknown> | undefined): ConnectionPath {
+    if (Array.isArray(proxyConfiguration?.proxyUrls)) return 'custom-proxy';
+    if (proxyConfiguration?.useApifyProxy === false) return 'direct';
+    const groups = Array.isArray(proxyConfiguration?.apifyProxyGroups)
+        ? proxyConfiguration.apifyProxyGroups.map(String) : [];
+    return groups.length === 1 && groups[0].toUpperCase() === 'RESIDENTIAL'
+        && String(proxyConfiguration?.apifyProxyCountry ?? '').toUpperCase() === 'IN'
+        ? 'recommended-residential-in' : 'custom-proxy';
 }
 
 export function classifyPropertyPage(html: string, parsedCount: number): 'listings' | 'empty' | 'blocked' | 'maintenance' | 'unrecognized' {
