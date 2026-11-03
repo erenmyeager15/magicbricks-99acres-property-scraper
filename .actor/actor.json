@@ -3,7 +3,7 @@
   "name": "magicbricks-99acres-property-scraper",
   "title": "MagicBricks & 99acres Property Data Scraper",
   "description": "Scrape filtered MagicBricks and 99acres searches with prices, amenities and source coverage. Optional bounded watchlists compare asking-price changes, normalize supported area units and export quality flags plus a change CSV.",
-  "version": "1.0",
+  "version": "1.1",
   "buildTag": "latest",
   "dockerfile": "./Dockerfile",
   "readme": "../README.md",
