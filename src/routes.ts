@@ -8,6 +8,7 @@ import { addPropertyIntelligence, monitorScope, propertyKey, squareFeet } from '
 import { PropertyMonitorError, savePropertyMonitor } from './property-monitor.js';
 import { readCanonical99State, type Canonical99State } from './99acres-state.js';
 import { readInitial99State } from './99acres-initial-state.js';
+import { portalCityName } from './city-aliases.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
@@ -540,11 +541,12 @@ function buildSourceUrl(
 ): string {
     if (source === 'magicbricks') {
         const path = transactionType === 'rent' ? 'property-for-rent' : 'property-for-sale';
-        const url = `https://www.magicbricks.com/${path}/residential-real-estate?cityName=${encodeURIComponent(city)}`;
+        const url = `https://www.magicbricks.com/${path}/residential-real-estate?cityName=${encodeURIComponent(portalCityName(source, city))}`;
         return paginateSearchUrl(url, source, page);
     }
 
-    const prefix = transactionType === 'rent' ? `property-for-rent-in-${citySlug}` : `property-in-${citySlug}`;
+    const portalSlug = slugCity(portalCityName(source, city)) || citySlug;
+    const prefix = transactionType === 'rent' ? `property-for-rent-in-${portalSlug}` : `property-in-${portalSlug}`;
     return page === 1
         ? `https://www.99acres.com/${prefix}-ffid`
         : `https://www.99acres.com/${prefix}-ffid-page-${page}`;
