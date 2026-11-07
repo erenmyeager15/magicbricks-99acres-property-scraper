@@ -8,7 +8,7 @@ import { addPropertyIntelligence, monitorScope, propertyKey, squareFeet } from '
 import { PropertyMonitorError, savePropertyMonitor } from './property-monitor.js';
 import { readCanonical99State, type Canonical99State } from './99acres-state.js';
 import { readInitial99State } from './99acres-initial-state.js';
-import { portalCityName } from './city-aliases.js';
+import { parseCityInput } from './city-aliases.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
@@ -112,7 +112,7 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     let fatalBillingError: Error | null = null;
     let fatalProxyError: PropertyFailureError | null = null;
     const failureCategories: Record<string, number> = {};
-    const failedPageDiagnostics: Array<PropertyFailureInfo & { source: string; page: number }> = [];
+    const failedPageDiagnostics: Array<PropertyFailureInfo & { source: string; page: number; city?: string }> = [];
     let requestAttempts = 0;
     let earlyStoppedPages = 0;
     let primary99StatePages = 0;
@@ -253,7 +253,8 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
             failedPages += 1;
             const failure = propertyFailure(error);
             failureCategories[failure.info.category] = (failureCategories[failure.info.category] ?? 0) + 1;
-            if (failedPageDiagnostics.length < 20) failedPageDiagnostics.push({ ...failure.info, source: job.source, page: job.page });
+            if (failedPageDiagnostics.length < 20) failedPageDiagnostics.push({ ...failure.info, source: job.source, page: job.page,
+                ...(job.isCustomUrl ? {} : { city: job.city }) });
             if (failure.stopRun) fatalProxyError = failure;
             searchFailures.set(searchKey, (searchFailures.get(searchKey) ?? 0) + 1);
             if (shouldStopFailedSearch(searchFailures.get(searchKey)!)) exhaustedSearches.add(searchKey);
@@ -363,8 +364,27 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     });
 }
 
-function zeroOutputFailure(categories: Record<string, number>, diagnostics: PropertyFailureInfo[],
+/** MagicBricks answers an unknown cityName with HTTP 500 and 99acres an unknown
+ * city slug with 404 (verified 7 Nov 2026). When every failed page is that,
+ * the input is the problem, not the portal; say which city and what to type. */
+export function unknownCityFailure(diagnostics: Array<PropertyFailureInfo & { source?: string; city?: string }>,
+    failedPages: number): PropertyFailureError | null {
+    if (diagnostics.length === 0 || diagnostics.length !== failedPages) return null;
+    const unknown = diagnostics.every(item => item.city && item.category === 'SOURCE_HTTP'
+        && ((item.source === 'magicbricks' && item.httpStatus === 500) || (item.source === '99acres' && item.httpStatus === 404)));
+    if (!unknown) return null;
+    const cities = [...new Set(diagnostics.map(item => item.city!))];
+    // Kept as SOURCE_HTTP: the same status can also mean a real portal outage.
+    return new PropertyFailureError({ category: 'SOURCE_HTTP',
+        message: `The portal returned HTTP ${diagnostics[0].httpStatus} for ${cities.map(city => `"${city}"`).join(', ')}. `
+            + 'It does this for city names it does not recognise. Use the city name only, such as "Mumbai", "Pune" or "Hyderabad"; for a locality, write "Locality, City", for example "Andheri West, Mumbai". No listings were saved and none were charged.',
+        httpStatus: diagnostics[0].httpStatus, attempts: diagnostics.reduce((n, item) => n + (item.attempts ?? 0), 0) || undefined });
+}
+
+function zeroOutputFailure(categories: Record<string, number>, diagnostics: Array<PropertyFailureInfo & { source?: string; city?: string }>,
     connection: ObservedConnection, failedPages: number, requestAttempts: number, processedPages: number): PropertyFailureError {
+    const unknownCity = processedPages === 0 ? unknownCityFailure(diagnostics, failedPages) : null;
+    if (unknownCity) return unknownCity;
     const category = Object.keys(categories).length === 1 && diagnostics.length > 0
         ? diagnostics[0].category : 'UNKNOWN';
     const statuses = new Set(diagnostics.map(item => item.httpStatus));
@@ -541,11 +561,15 @@ function buildSourceUrl(
 ): string {
     if (source === 'magicbricks') {
         const path = transactionType === 'rent' ? 'property-for-rent' : 'property-for-sale';
-        const url = `https://www.magicbricks.com/${path}/residential-real-estate?cityName=${encodeURIComponent(portalCityName(source, city))}`;
+        const search = parseCityInput(source, city);
+        // Verified 7 Nov 2026: cityName=Mumbai&Locality=Andheri-West returns Andheri West listings.
+        const locality = search.locality ? `&Locality=${encodeURIComponent(search.locality.replace(/\s+/g, '-'))}` : '';
+        const url = `https://www.magicbricks.com/${path}/residential-real-estate?cityName=${encodeURIComponent(search.city)}${locality}`;
         return paginateSearchUrl(url, source, page);
     }
 
-    const portalSlug = slugCity(portalCityName(source, city)) || citySlug;
+    // 99acres city pages only; a locality narrows MagicBricks but not 99acres.
+    const portalSlug = slugCity(parseCityInput(source, city).city) || citySlug;
     const prefix = transactionType === 'rent' ? `property-for-rent-in-${portalSlug}` : `property-in-${portalSlug}`;
     return page === 1
         ? `https://www.99acres.com/${prefix}-ffid`
