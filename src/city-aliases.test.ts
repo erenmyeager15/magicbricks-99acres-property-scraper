@@ -53,6 +53,26 @@ test('locality input adds a Locality filter to the MagicBricks URL only', () => 
     assert.match(jobs.find(j => j.source === '99acres')!.url, /\/property-in-mumbai-ffid$/);
 });
 
+test('a bare locality typed as the city searches its city with a Locality filter', () => {
+    const mb = (raw: string) => parseCityInput('magicbricks', raw);
+    assert.deepEqual(mb('Mira Road'), { city: 'Mumbai', locality: 'Mira Road' });
+    assert.deepEqual(mb('Mira Road East'), { city: 'Mumbai', locality: 'Mira Road East' });
+    assert.deepEqual(mb('Andheri West'), { city: 'Mumbai', locality: 'Andheri West' });
+    assert.deepEqual(mb('whitefield'), { city: 'Bangalore', locality: 'whitefield' });
+    assert.deepEqual(mb('Kharghar, Maharashtra'), { city: 'Navi Mumbai', locality: 'Kharghar' });
+    assert.deepEqual(mb('Dombivli'), { city: 'Kalyan', locality: 'Dombivli' });
+    assert.deepEqual(mb('Dwarka'), { city: 'New Delhi', locality: 'Dwarka' });
+    assert.deepEqual(mb('Thane'), { city: 'Thane', locality: null });
+    assert.deepEqual(parseCityInput('99acres', 'Dombivli').city, 'Mumbai');
+    assert.deepEqual(parseCityInput('99acres', 'Dwarka').city, 'Delhi');
+    assert.deepEqual(parseCityInput('99acres', 'Thane').city, 'Mumbai');
+
+    const input = normalizeInput({ source: 'both', cities: ['Mira Road'], maxResults: 5 });
+    const jobs = buildJobs(input, ['magicbricks', '99acres']).filter(job => job.page === 1);
+    assert.match(jobs.find(j => j.source === 'magicbricks')!.url, /cityName=Mumbai&Locality=Mira-Road(?:&|$)/);
+    assert.match(jobs.find(j => j.source === '99acres')!.url, /\/property-in-mumbai-ffid$/);
+});
+
 test('an all-unknown-city failure names the city instead of a generic HTTP 500', () => {
     const failure = unknownCityFailure([
         { category: 'SOURCE_HTTP', message: 'HTTP 500', httpStatus: 500, source: 'magicbricks', city: 'Mira Road' },

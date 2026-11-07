@@ -40,7 +40,30 @@ const NINETY_NINE_ACRES: Record<string, string> = {
     mysuru: 'Mysore',
     cochin: 'Kochi',
     baroda: 'Vadodara',
+    // No Thane or Kalyan city page (404, verified 7 Nov 2026); the Mumbai page
+    // covers the Mumbai metro region.
+    thane: 'Mumbai',
+    kalyan: 'Mumbai',
 };
+
+/** Localities people type on their own as a "city". MagicBricks returns HTTP 500
+ * for every one of them as a cityName; each pair below was verified live on
+ * 7 November 2026 to return that locality's listings as cityName=<city>&Locality=<name>.
+ * A trailing "East"/"West" is ignored for the lookup and kept for the filter. */
+const LOCALITY_CITY: Record<string, string> = Object.fromEntries(Object.entries({
+    Mumbai: ['mira road', 'mira bhayandar', 'bhayandar', 'borivali', 'kandivali', 'powai', 'vasai', 'virar', 'nalasopara',
+        'andheri', 'bandra', 'malad', 'goregaon', 'chembur', 'ghatkopar', 'mulund', 'dahisar'],
+    'Navi Mumbai': ['kharghar', 'panvel', 'vashi', 'nerul', 'ulwe'],
+    Kalyan: ['dombivli'],
+    Pune: ['hinjewadi', 'wakad', 'kharadi', 'baner', 'wagholi', 'hadapsar', 'kothrud', 'pimpri chinchwad'],
+    Bangalore: ['whitefield', 'electronic city', 'sarjapur road', 'marathahalli', 'hsr layout', 'koramangala', 'yelahanka', 'hebbal'],
+    Hyderabad: ['gachibowli', 'kondapur', 'kukatpally', 'madhapur', 'miyapur'],
+    Chennai: ['velachery', 'tambaram', 'porur', 'anna nagar', 'omr'],
+    'New Delhi': ['dwarka', 'rohini'],
+    Kolkata: ['new town', 'rajarhat', 'salt lake'],
+    Ghaziabad: ['indirapuram'],
+    'Greater Noida': ['noida extension'],
+}).flatMap(([city, localities]) => localities.map(locality => [locality, city])));
 
 const STATES = new Set([
     'andhra pradesh', 'arunachal pradesh', 'assam', 'bihar', 'chhattisgarh', 'goa', 'gujarat', 'haryana',
@@ -80,6 +103,13 @@ export function parseCityInput(source: 'magicbricks' | '99acres', raw: string): 
     });
     const table = source === 'magicbricks' ? MAGICBRICKS : NINETY_NINE_ACRES;
     const rawCity = rest.at(-1) ?? clean(raw);
+    if (rest.length === 1) {
+        // A bare locality such as "Mira Road" or "Whitefield": search its city.
+        const localityCity = LOCALITY_CITY[key(rawCity).replace(/\s+(?:east|west)$/, '')];
+        if (localityCity) {
+            return { city: table[key(localityCity)] ?? localityCity, locality: rawCity };
+        }
+    }
     const city = table[key(rawCity)] ?? rawCity;
     const locality = rest.length > 1 ? rest[0] : null;
     return { city: city || clean(raw), locality };

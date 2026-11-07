@@ -29,7 +29,7 @@
     "cities": {
       "title": "Indian cities",
       "type": "array",
-      "description": "Start with one city. Examples: Mumbai, Bengaluru, Pune, Delhi, Chennai, or Hyderabad.",
+      "description": "Start with one city. Examples: Mumbai, Bengaluru, Pune, Delhi, Chennai, or Hyderabad. To narrow MagicBricks to a locality, write \"Locality, City\", for example \"Andheri West, Mumbai\". Common localities such as Mira Road, Whitefield or Hinjewadi also work on their own.",
       "editor": "stringList",
       "items": { "type": "string" },
       "minItems": 1,
