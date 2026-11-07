@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCityInput, portalCityName } from './city-aliases.js';
-import { buildJobs, unknownCityFailure } from './routes.js';
+import { buildJobs, parseMagicBricks, unknownCityFailure } from './routes.js';
 import { normalizeInput } from './input.js';
 
 test('each portal gets the city spelling it accepts', () => {
@@ -63,4 +63,15 @@ test('an all-unknown-city failure names the city instead of a generic HTTP 500',
     assert.match(failure.message, /Locality, City/);
     assert.equal(unknownCityFailure([{ category: 'SOURCE_HTTP', message: 'HTTP 403', httpStatus: 403, source: 'magicbricks', city: 'Mumbai' }], 1), null);
     assert.equal(unknownCityFailure([{ category: 'SOURCE_HTTP', message: 'HTTP 500', httpStatus: 500, source: 'magicbricks' }], 1), null);
+});
+
+test('locality input keeps titles and locations clean and reports the portal city', () => {
+    const job = buildJobs(normalizeInput({ source: 'magicbricks', cities: ['Whitefield, Bengaluru, Karnataka'], maxResults: 1 }), ['magicbricks'])[0];
+    const html = '<div class="mb-srp__card"><a href="https://www.magicbricks.com/propertyDetails/2-BHK-1200-Sq-ft-Multistorey-Apartment-FOR-Sale-Whitefield-in-Bangalore&id=4d423737393337383930">'
+        + '<h2>2 BHK Flat for Sale in Whitefield, Bangalore</h2></a><div>₹ 85 Lac ₹ 7,083 per sqft</div><div>Carpet Area 1200 sqft</div></div>';
+    const [record] = parseMagicBricks(html, job);
+    assert.ok(record);
+    assert.equal(record.city, 'Bangalore');
+    assert.equal(record.cityQuery, 'Whitefield, Bengaluru, Karnataka');
+    assert.doesNotMatch(String(record.locality), /per sqft|^\d/);
 });

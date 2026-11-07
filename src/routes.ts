@@ -796,8 +796,10 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
 
         if (!propertyUrl) continue;
 
-        const title = cleanText(listItem?.name) || extractMagicTitle(text, job.city);
-        const location = parseMagicLocation(title, job.city);
+        // The user may type "Whitefield, Bengaluru, Karnataka"; card titles contain the portal city.
+        const portalCity = parseCityInput('magicbricks', job.city).city;
+        const title = cleanText(listItem?.name) || extractMagicTitle(text, portalCity);
+        const location = parseMagicLocation(title, portalCity);
         const priceDisplay = extractPriceDisplay(text);
         const price = parseIndianMoney(priceDisplay);
         const area = extractArea(text);
@@ -831,7 +833,7 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
             floor: extractFloor(text),
             projectName,
             locality: location.locality,
-            city: job.city,
+            city: portalCity,
             address: location.address,
             latitude: null,
             longitude: null,
@@ -934,7 +936,7 @@ export function parse99Acres(html: string, job: ScrapeJob, canonical = readCanon
             floor: cleanText(asString(item.floorlevel)) || state.floor || extractFloor(description),
             projectName: cleanText(asString(address.name)) || state.projectName || (is99ProjectUrl(url) ? title : null),
             locality: cleanText(asString(address.streetAddress)) || state.locality || cleanText(asString(address.addressLocality)) || null,
-            city: cleanText(asString(address.addressLocality)) || state.city || job.city,
+            city: cleanText(asString(address.addressLocality)) || state.city || parseCityInput('99acres', job.city).city,
             address: buildAddress(address),
             latitude: finiteNumber(geo.latitude) ?? state.latitude ?? null,
             longitude: finiteNumber(geo.longitude) ?? state.longitude ?? null,
@@ -1158,6 +1160,8 @@ function parseMagicLocation(title: string | null, city: string): { projectName: 
     const parts = afterIn
         .split(',')
         .map((part) => stripCitySuffix(cleanText(part), city))
+        // A comma inside a price ("₹ 1,035 per sqft") is not a place.
+        .filter((part) => !/^\d/.test(part) && !/\bper\s+sq/i.test(part))
         .filter(Boolean);
 
     const projectName = parts.length > 1 ? parts[0] : null;
