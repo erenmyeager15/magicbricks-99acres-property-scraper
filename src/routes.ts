@@ -8,7 +8,7 @@ import { addPropertyIntelligence, monitorScope, propertyKey, squareFeet } from '
 import { PropertyMonitorError, savePropertyMonitor } from './property-monitor.js';
 import { readCanonical99State, type Canonical99State } from './99acres-state.js';
 import { readInitial99State } from './99acres-initial-state.js';
-import { parseCityInput } from './city-aliases.js';
+import { isIndianStateName, parseCityInput, suggestMagicBricksCity } from './city-aliases.js';
 import type { ActorInput, NormalizedInput, PropertyRecord, PropertySource, ScrapeJob } from './types.js';
 
 const CHARGE_EVENT_NAME = 'property-scraped';
@@ -264,6 +264,20 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
                 page: job.page,
                 ...failure.info,
             });
+            // A misspelt city ("Banglore") gets MagicBricks HTTP 500 / 99acres 404.
+            // Only then, retry this search once under the closest known city.
+            const corrected = correctedCityJobs(jobs, jobIndex, failure.info.httpStatus);
+            if (corrected) {
+                failedPages -= 1;
+                failureCategories[failure.info.category] -= 1;
+                if (failureCategories[failure.info.category] === 0) delete failureCategories[failure.info.category];
+                const last = failedPageDiagnostics.at(-1);
+                if (last && last.source === job.source && last.page === job.page && last.city === job.city) failedPageDiagnostics.pop();
+                exhaustedSearches.add(searchKey);
+                log.info('The portal did not recognise the city; retrying with the closest known city', {
+                    source: job.source, city: job.city, correctedCity: corrected,
+                });
+            }
         }
 
         // A bad proxy credential/configuration affects every city and portal.
@@ -364,6 +378,29 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     });
 }
 
+/** After MagicBricks rejected page 1 of a city search with HTTP 500, re-point
+ * that search at the closest known city: the current page is re-queued right
+ * after this job and later pages of the search are rewritten. Each search is
+ * corrected at most once. Returns the corrected city, or null. */
+export function correctedCityJobs(jobs: ScrapeJob[], jobIndex: number, httpStatus: number | undefined): string | null {
+    const job = jobs[jobIndex];
+    const unknownCityStatus = job.source === 'magicbricks' ? 500 : 404;
+    if (job.isCustomUrl || httpStatus !== unknownCityStatus || job.page !== 1 || job.cityQuery) return null;
+    const search = parseCityInput(job.source, job.city);
+    const suggestion = suggestMagicBricksCity(search.city);
+    if (!suggestion) return null;
+    const correctedText = search.locality ? `${search.locality}, ${suggestion}` : suggestion;
+    const searchKey = `${job.source}:${job.transactionType}:${slugCity(correctedText)}`;
+    const rewrite = (original: ScrapeJob): ScrapeJob => ({ ...original, city: correctedText, citySlug: slugCity(correctedText),
+        url: buildSourceUrl(original.source, original.transactionType, correctedText, slugCity(correctedText), original.page),
+        searchKey, cityQuery: original.city });
+    for (let index = jobIndex + 1; index < jobs.length; index++) {
+        if (jobs[index].searchKey === job.searchKey) jobs[index] = rewrite(jobs[index]);
+    }
+    jobs.splice(jobIndex + 1, 0, rewrite(job));
+    return suggestion;
+}
+
 /** MagicBricks answers an unknown cityName with HTTP 500 and 99acres an unknown
  * city slug with 404 (verified 7 Nov 2026). When every failed page is that,
  * the input is the problem, not the portal; say which city and what to type. */
@@ -374,9 +411,11 @@ export function unknownCityFailure(diagnostics: Array<PropertyFailureInfo & { so
         && ((item.source === 'magicbricks' && item.httpStatus === 500) || (item.source === '99acres' && item.httpStatus === 404)));
     if (!unknown) return null;
     const cities = [...new Set(diagnostics.map(item => item.city!))];
+    const states = cities.filter(isIndianStateName);
+    const stateHint = states.length ? `${states.map(city => `"${city}"`).join(', ')} ${states.length === 1 ? 'is a state' : 'are states'}, not a city; enter a city in it instead. ` : '';
     // Kept as SOURCE_HTTP: the same status can also mean a real portal outage.
     return new PropertyFailureError({ category: 'SOURCE_HTTP',
-        message: `The portal returned HTTP ${diagnostics[0].httpStatus} for ${cities.map(city => `"${city}"`).join(', ')}. `
+        message: `The portal returned HTTP ${diagnostics[0].httpStatus} for ${cities.map(city => `"${city}"`).join(', ')}. ${stateHint}`
             + 'It does this for city names it does not recognise. Use the city name only, such as "Mumbai", "Pune" or "Hyderabad"; for a locality, write "Locality, City", for example "Andheri West, Mumbai". No listings were saved and none were charged.',
         httpStatus: diagnostics[0].httpStatus, attempts: diagnostics.reduce((n, item) => n + (item.attempts ?? 0), 0) || undefined });
 }
@@ -813,7 +852,7 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
         records.push({
             source: 'magicbricks',
             transactionType: job.transactionType,
-            cityQuery: job.city,
+            cityQuery: job.cityQuery ?? job.city,
             propertyId: extractMagicId(propertyUrl) ?? stableId('magicbricks', propertyUrl),
             title: title || null,
             propertyType: extractPropertyType(`${title} ${text}`),
@@ -916,7 +955,7 @@ export function parse99Acres(html: string, job: ScrapeJob, canonical = readCanon
         records.push({
             source: '99acres',
             transactionType: job.transactionType,
-            cityQuery: job.city,
+            cityQuery: job.cityQuery ?? job.city,
             propertyId: extract99AcresId(url) ?? stableId('99acres', url),
             title: title || null,
             propertyType: state.propertyType ?? extractPropertyType(`${title} ${description}`) ?? 'Apartment',

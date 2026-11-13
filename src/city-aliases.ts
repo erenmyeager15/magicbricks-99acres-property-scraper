@@ -118,3 +118,52 @@ export function parseCityInput(source: 'magicbricks' | '99acres', raw: string): 
 export function portalCityName(source: 'magicbricks' | '99acres', city: string): string {
     return parseCityInput(source, city).city;
 }
+
+/** Cities MagicBricks accepts as cityName (portal spelling). Used only to
+ * correct a typo after MagicBricks has rejected the user's text with HTTP 500. */
+const KNOWN_MAGICBRICKS_CITIES = [
+    'Mumbai', 'Navi Mumbai', 'Thane', 'Pune', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'New Delhi', 'Gurgaon',
+    'Noida', 'Greater Noida', 'Ghaziabad', 'Faridabad', 'Ahmedabad', 'Surat', 'Vadodara', 'Rajkot', 'Gandhinagar',
+    'Jaipur', 'Lucknow', 'Kanpur', 'Indore', 'Bhopal', 'Nagpur', 'Nashik', 'Aurangabad', 'Kolhapur', 'Chandigarh',
+    'Mohali', 'Zirakpur', 'Panchkula', 'Ludhiana', 'Amritsar', 'Jalandhar', 'Dehradun', 'Coimbatore', 'Madurai',
+    'Trichy', 'Kochi', 'Trivandrum', 'Kozhikode', 'Mysore', 'Mangalore', 'Visakhapatnam', 'Vijayawada', 'Guntur',
+    'Bhubaneswar', 'Cuttack', 'Patna', 'Ranchi', 'Raipur', 'Guwahati', 'Goa', 'Varanasi', 'Allahabad', 'Agra',
+    'Meerut', 'Bhiwadi', 'Bhiwandi', 'Kalyan', 'Vasai', 'Palghar', 'Sonipat', 'Jodhpur', 'Udaipur', 'Jabalpur',
+    'Gwalior', 'Pondicherry', 'Hubli', 'Belgaum', 'Siliguri', 'Durgapur', 'Jamshedpur', 'Dhanbad', 'Haridwar',
+];
+
+function editDistance(a: string, b: string): number {
+    const row = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        let previous = row[0];
+        row[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+            const current = row[j];
+            row[j] = Math.min(row[j] + 1, row[j - 1] + 1, previous + (a[i - 1] === b[j - 1] ? 0 : 1));
+            previous = current;
+        }
+    }
+    return row[b.length];
+}
+
+/** The single closest known MagicBricks city for a misspelt name such as
+ * "Banglore" or "Hydrabad", or null when the text is not a near miss.
+ * Short names need a closer match; ties return null rather than a guess. */
+export function suggestMagicBricksCity(rawCity: string): string | null {
+    const text = key(rawCity).replace(/[^a-z ]/g, '');
+    if (text.length < 4) return null;
+    const allowed = text.length >= 7 ? 2 : 1;
+    let best: string | null = null;
+    let bestDistance = Infinity;
+    let tie = false;
+    for (const city of KNOWN_MAGICBRICKS_CITIES) {
+        const distance = editDistance(text, city.toLowerCase());
+        if (distance < bestDistance) { best = city; bestDistance = distance; tie = false; }
+        else if (distance === bestDistance) tie = true;
+    }
+    return best && bestDistance > 0 && bestDistance <= allowed && !tie ? best : null;
+}
+
+export function isIndianStateName(raw: string): boolean {
+    return STATES.has(key(raw)) && !['goa', 'india', 'ncr', 'delhi ncr'].includes(key(raw));
+}

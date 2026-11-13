@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCityInput, portalCityName } from './city-aliases.js';
-import { buildJobs, parseMagicBricks, unknownCityFailure } from './routes.js';
+import { isIndianStateName, parseCityInput, portalCityName, suggestMagicBricksCity } from './city-aliases.js';
+import { buildJobs, correctedCityJobs, parseMagicBricks, unknownCityFailure } from './routes.js';
 import { normalizeInput } from './input.js';
 
 test('each portal gets the city spelling it accepts', () => {
@@ -94,4 +94,44 @@ test('locality input keeps titles and locations clean and reports the portal cit
     assert.equal(record.city, 'Bangalore');
     assert.equal(record.cityQuery, 'Whitefield, Bengaluru, Karnataka');
     assert.doesNotMatch(String(record.locality), /per sqft|^\d/);
+});
+
+test('misspelt cities map to one close known city; unrelated text and ties do not', () => {
+    assert.equal(suggestMagicBricksCity('Banglore'), 'Bangalore');
+    assert.equal(suggestMagicBricksCity('Hydrabad'), 'Hyderabad');
+    assert.equal(suggestMagicBricksCity('Gurgoan'), 'Gurgaon');
+    assert.equal(suggestMagicBricksCity('chenai'), 'Chennai');
+    assert.equal(suggestMagicBricksCity('Ahmedbad'), 'Ahmedabad');
+    assert.equal(suggestMagicBricksCity('Mumbai'), null, 'an exact name needs no correction');
+    for (const text of ['Ghodbunder Road', 'Maharashtra', 'Xyzabad', 'Goa', 'abc']) {
+        assert.equal(suggestMagicBricksCity(text), null, text);
+    }
+    assert.equal(isIndianStateName('Maharashtra'), true);
+    assert.equal(isIndianStateName('Goa'), false, 'Goa is also a MagicBricks city');
+});
+
+test('a rejected misspelt city is retried once under the corrected city, keeping the original as cityQuery', () => {
+    const jobs = buildJobs(normalizeInput({ source: 'both', cities: ['Banglore'], maxResults: 60 }), ['magicbricks', '99acres']);
+    const mbIndex = jobs.findIndex(job => job.source === 'magicbricks' && job.page === 1);
+    const before = jobs.length;
+    assert.equal(correctedCityJobs(jobs, mbIndex, 500), 'Bangalore');
+    assert.equal(jobs.length, before + 1);
+    const retry = jobs[mbIndex + 1];
+    assert.equal(retry.city, 'Bangalore'); assert.equal(retry.cityQuery, 'Banglore'); assert.equal(retry.page, 1);
+    assert.match(retry.url, /cityName=Bangalore(?:&|$)/);
+    const laterMb = jobs.slice(mbIndex + 2).filter(job => job.source === 'magicbricks');
+    assert.ok(laterMb.length > 0 && laterMb.every(job => job.city === 'Bangalore' && job.searchKey === retry.searchKey));
+    // Never corrected twice, never for another status or a later page.
+    assert.equal(correctedCityJobs(jobs, mbIndex + 1, 500), null);
+    const acresIndex = jobs.findIndex(job => job.source === '99acres' && job.page === 1);
+    assert.equal(correctedCityJobs(jobs, acresIndex, 500), null, '99acres signals an unknown city with 404');
+    assert.equal(correctedCityJobs(jobs, acresIndex, 404), 'Bangalore');
+    assert.match(jobs[acresIndex + 1].url, /property-in-bangalore-ffid$/);
+    const other = buildJobs(normalizeInput({ source: 'magicbricks', cities: ['Maharashtra'], maxResults: 5 }), ['magicbricks']);
+    assert.equal(correctedCityJobs(other, 0, 500), null);
+});
+
+test('a state entered as a city gets a specific message', () => {
+    const failure = unknownCityFailure([{ category: 'SOURCE_HTTP', message: 'HTTP 500', httpStatus: 500, source: 'magicbricks', city: 'Maharashtra' }], 1);
+    assert.match(failure!.message, /"Maharashtra" is a state, not a city/);
 });

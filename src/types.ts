@@ -48,6 +48,8 @@ export interface ScrapeJob {
     url: string;
     searchKey: string;
     isCustomUrl: boolean;
+    /** The user's original text when `city` was corrected after a portal rejection. */
+    cityQuery?: string;
 }
 
 export interface PropertyRecord {

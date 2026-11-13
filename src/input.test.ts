@@ -192,3 +192,21 @@ test('malformed encoded search paths and non-object proxy input fail safely befo
     assert.throws(() => normalizeInput({ proxyConfiguration: 'private-secret' } as never), /proxy configuration object/);
     assert.throws(() => normalizeInput(['private-secret'] as never), /JSON object/);
 });
+
+test('single listing and project pages are rejected before any request with a clear message', () => {
+    for (const url of [
+        'https://www.magicbricks.com/propertyDetails/2-BHK-1000-Sq-ft-Multistorey-Apartment-FOR-Sale-Andheri-West-in-Mumbai&id=4d423737393337383930',
+        'https://www.magicbricks.com/lodha-amara-thane-pdpid-4d4235303033313533',
+        'https://www.99acres.com/2-bhk-flat-in-mumbai-1000-sq-ft-spid-R911000001',
+        'https://www.99acres.com/lodha-amara-thane-npxid-r12345',
+    ]) {
+        assert.throws(() => normalizeInput({ searchUrls: [url] }), /single (listing|project) page, not a search results page/, url);
+    }
+    for (const url of [
+        'https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=Thane',
+        'https://www.99acres.com/2-bhk-flats-for-sale-in-pune-ffid',
+        'https://www.99acres.com/property-for-rent-in-mumbai-ffid',
+    ]) {
+        assert.doesNotThrow(() => normalizeInput({ searchUrls: [url] }), url);
+    }
+});

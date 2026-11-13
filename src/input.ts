@@ -45,6 +45,20 @@ function cityFromSearchUrl(url: URL, source: Exclude<PropertySource, 'both'>, fa
     return pathMatch?.[1] ? titleFromSlug(pathMatch[1]) : fallbackCity;
 }
 
+/** Listing and project pages hold one property, not a results list. Verified
+ * 13 Nov 2026: a MagicBricks project page (-pdpid-) returns no listing cards. */
+export function singlePageKind(url: URL, source: Exclude<PropertySource, 'both'>): 'listing' | 'project' | null {
+    const path = url.pathname.toLowerCase();
+    if (source === 'magicbricks') {
+        if (/^\/propertydetails[/-]/.test(path)) return 'listing';
+        if (/-pdpid-[a-z0-9]+/.test(path)) return 'project';
+        return null;
+    }
+    if (/-spid-[a-z]?\d+/.test(path)) return 'listing';
+    if (/-npxid-[a-z]?\d+/.test(path)) return 'project';
+    return null;
+}
+
 function searchUrlSource(url: URL): Exclude<PropertySource, 'both'> | null {
     const hostname = url.hostname.toLowerCase();
     if (hostname === 'magicbricks.com' || hostname.endsWith('.magicbricks.com')) return 'magicbricks';
@@ -104,6 +118,11 @@ function normalizeSearchUrls(value: unknown, fallbackCity: string): SearchUrlDef
 
         const source = searchUrlSource(url);
         if (!source) invalidInput('Search URL must use magicbricks.com or 99acres.com.');
+        const pageKind = singlePageKind(url, source);
+        if (pageKind) {
+            invalidInput(`This is a single ${pageKind} page, not a search results page: ${url.origin}${url.pathname}. `
+                + 'Paste the URL of a search results list (for example, after searching a city or locality on the portal), or use the City field.');
+        }
         searchUrlStartPage(url, source);
 
         url.protocol = 'https:';
