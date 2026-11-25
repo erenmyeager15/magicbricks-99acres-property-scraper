@@ -137,6 +137,8 @@ function propertyFields(own: Record<string, unknown>): Record<string, unknown> {
     // property fields and its dedicated photo/geo containers enrich the row.
     const names = ['PD_URL', 'SPID', 'PREFERENCE', 'MIN_PRICE', 'PRICE_IN_WORDS',
         'SUPERBUILTUP_AREA', 'SUPERBUILTUPAREA_UNIT', 'CARPET_AREA', 'CARPETAREA_UNIT', 'BUILTUP_AREA', 'BUILTUPAREA_UNIT',
+        // Land listings can publish their size as SUPER_AREA and SUPERAREA_UNIT.
+        'SUPER_AREA', 'SUPERAREA_UNIT', 'PROPERTY_TYPE',
         'LOCALIZED_AREA_TYPE', 'AREA_TYPE', 'BEDROOM_NUM', 'BATHROOM_NUM', 'FURNISH_LABEL', 'FLOOR_NUMBER', 'FLOOR_NUM',
         'PROP_TYPE_LABEL', 'PROP_NAME', 'localityLabel', 'LOCALITY_NAME', 'CITY', 'LATITUDE', 'LONGITUDE',
         'POSTED_BY', 'CLASS_LABEL', 'CONTACT_TYPE', 'CLASS', 'IS_VERIFIED', 'VERIFIED', 'IS_FEATURED', 'FEATURED',

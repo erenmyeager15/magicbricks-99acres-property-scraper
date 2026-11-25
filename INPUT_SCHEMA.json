@@ -29,7 +29,7 @@
     "cities": {
       "title": "Indian cities",
       "type": "array",
-      "description": "Start with one city. Examples: Mumbai, Bengaluru, Pune, Delhi, Chennai, or Hyderabad. To narrow MagicBricks to a locality, write \"Locality, City\", for example \"Andheri West, Mumbai\". Common localities such as Mira Road, Whitefield or Hinjewadi also work on their own.",
+      "description": "Start with one city, such as Mumbai, Bengaluru, Pune, Delhi, Chennai or Hyderabad. For MagicBricks, enter a locality as \"Locality, City\", for example \"Andheri West, Mumbai\". Common localities such as Mira Road, Whitefield or Hinjewadi also work on their own. For a PIN-code search, paste the results URL with the filter applied.",
       "editor": "stringList",
       "items": { "type": "string" },
       "minItems": 1,
@@ -50,7 +50,7 @@
     "searchUrls": {
       "title": "MagicBricks or 99acres search URLs",
       "type": "array",
-      "description": "Optional. Paste complete search-results URLs to preserve portal filters. A URL on page 5 starts at page 5 and continues forward. These URLs override the quick-start portal, transaction, and city fields.",
+      "description": "Optional. Paste complete property results URLs, including 99acres commercial or plot searches, to preserve portal filters. A URL on page 5 continues from page 5. The URLs override the quick-start portal, transaction, and city fields.",
       "editor": "stringList",
       "items": { "type": "string" },
       "maxItems": 10,

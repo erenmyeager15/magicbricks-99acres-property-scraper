@@ -89,10 +89,10 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
     let proxyConfiguration: PageProxy;
     const requestedConnection = connectionPath(input.proxyConfiguration);
     let effectiveConnection: ObservedConnection = 'not-established';
-    if (!spendingLimitReached) {
+    if (!spendingLimitReached && requestedConnection !== 'direct') {
         try {
             proxyConfiguration = await runtime.createProxy(input.proxyConfiguration);
-            if (requestedConnection !== 'direct' && !proxyConfiguration) {
+            if (!proxyConfiguration) {
                 throw propertyFailure(new Error('Configured proxy was not created'), 'PROXY_CONFIGURATION');
             }
         }
@@ -257,7 +257,11 @@ export async function scrapeProperties(rawInput: ActorInput, runtime: PropertySc
                 ...(job.isCustomUrl ? {} : { city: job.city }) });
             if (failure.stopRun) fatalProxyError = failure;
             searchFailures.set(searchKey, (searchFailures.get(searchKey) ?? 0) + 1);
-            if (shouldStopFailedSearch(searchFailures.get(searchKey)!)) exhaustedSearches.add(searchKey);
+            if (shouldStopFailedSearch(searchFailures.get(searchKey)!)
+                || (requestedConnection === 'direct' && isSourceAccessRejection(failure.info))
+                || (job.isCustomUrl && isMissingSearchPage(failure.info.httpStatus))) {
+                exhaustedSearches.add(searchKey);
+            }
             log.warning('Property page failed', {
                 source: job.source,
                 city: job.city,
@@ -433,13 +437,23 @@ function zeroOutputFailure(categories: Record<string, number>, diagnostics: Arra
     const httpStatus = completeDiagnostics && statuses.size === 1 ? diagnostics[0]?.httpStatus : undefined;
     const attempts = requestAttempts || (completeDiagnostics
         ? diagnostics.reduce((total, item) => total + (item.attempts ?? 0), 0) : 0);
-    const blocked = category === 'SOURCE_BLOCKED' || httpStatus === 403 || httpStatus === 429;
-    const advice = blocked && connection === 'direct'
-        ? 'The portal rejected no-proxy access. Select Residential India or your permitted Indian proxy; access is not guaranteed.'
-        : blocked ? 'The portal rejected the configured route. Check proxy access and wait before another run; repeated runs are not a guaranteed fix.'
-            : category === 'SOURCE_MAINTENANCE' ? 'The portal returned maintenance pages; wait until source access recovers.'
-                : category === 'SOURCE_UNRECOGNIZED' ? 'The response was not recognized as listings or a confirmed empty search. Share this failed run for diagnosis.'
-                    : 'Check the per-page failure diagnostics before another run.';
+    const blocked = isSourceAccessRejection({ category, httpStatus });
+    const unavailableUrls = completeDiagnostics && diagnostics.length > 0
+        && diagnostics.every(item => item.city === undefined && isMissingSearchPage(item.httpStatus));
+    let advice = 'Check the per-page failure diagnostics before another run.';
+    if (unavailableUrls) {
+        advice = 'The supplied search URL is unavailable. Open a fresh search on the portal, apply your filters, and paste the results URL.';
+    } else if (httpStatus === 429) {
+        advice = 'The portal rate-limited this request. Wait before starting another run.';
+    } else if (blocked) {
+        advice = connection === 'direct'
+            ? 'The portal rejected no-proxy access. Select Residential India or your permitted Indian proxy if you want to run with a proxy.'
+            : 'The portal rejected the configured route. Check proxy access and wait before another run.';
+    } else if (category === 'SOURCE_MAINTENANCE') {
+        advice = 'The portal returned maintenance pages. Wait until source access recovers.';
+    } else if (category === 'SOURCE_UNRECOGNIZED') {
+        advice = 'The response was not recognized as listings or a confirmed empty search. Share this failed run for diagnosis.';
+    }
     const outcome = processedPages > 0 ? 'Property collection was incomplete; some searches failed' : 'All property pages failed';
     return new PropertyFailureError({ category,
         message: `${outcome} (${category}${httpStatus === undefined ? '' : `, HTTP ${httpStatus}`}; connection: ${connection}). No listings were saved. ${advice} See RUN_SUMMARY.`,
@@ -469,6 +483,14 @@ export function shouldFailEmptyRun(processedPages: number): boolean {
 
 export function shouldStopFailedSearch(failedPages: number): boolean {
     return failedPages >= 2;
+}
+
+function isSourceAccessRejection(failure: Pick<PropertyFailureInfo, 'category' | 'httpStatus'>): boolean {
+    return failure.category === 'SOURCE_BLOCKED' || failure.httpStatus === 403 || failure.httpStatus === 429;
+}
+
+function isMissingSearchPage(status: number | undefined): boolean {
+    return status === 404 || status === 410;
 }
 
 function connectionPath(proxyConfiguration: Record<string, unknown> | undefined): ConnectionPath {
@@ -737,9 +759,11 @@ export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullabl
                 try { await response.body?.cancel(); }
                 catch { log.warning('Could not cancel the rejected property response body.'); }
                 const proxyAuth = [407, 597].includes(response.status);
+                const retryable = isRetryableHttpStatus(response.status)
+                    && (Boolean(proxyConfiguration) || (response.status !== 403 && response.status !== 429));
                 throw new PropertyFailureError({ category: proxyAuth ? 'PROXY_AUTHENTICATION' : 'SOURCE_HTTP',
                     message: proxyAuth ? `Proxy authorization failed (HTTP ${response.status}); check configured proxy access.` : `HTTP ${response.status}`,
-                    httpStatus: response.status, attempts: attempt }, isRetryableHttpStatus(response.status), proxyAuth);
+                    httpStatus: response.status, attempts: attempt }, retryable, proxyAuth);
             }
 
             const html = await readBoundedResponseText(response, MAX_HTML_BYTES, {
@@ -758,7 +782,7 @@ export async function fetchHtml(url: string, proxyConfiguration: Pick<NonNullabl
                 throw new PropertyFailureError({ category: state === 'maintenance' ? 'SOURCE_MAINTENANCE'
                     : state === 'blocked' ? 'SOURCE_BLOCKED' : 'SOURCE_UNRECOGNIZED',
                     message: `${state === 'maintenance' ? 'Source returned a maintenance page instead of property listings' : `Property response ${state}`} (HTTP ${response.status}, ${Buffer.byteLength(html)} decoded bytes, attempt ${attempt}/${MAX_REQUEST_ATTEMPTS})`,
-                    httpStatus: response.status, attempts: attempt }, true);
+                    httpStatus: response.status, attempts: attempt }, state !== 'blocked' || Boolean(proxyConfiguration));
             }
 
             return html;
@@ -902,9 +926,49 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
     return records;
 }
 
-export function parse99Acres(html: string, job: ScrapeJob, canonical = readCanonical99State(html)): PropertyRecord[] {
+// Commercial and plot result lists group their items in an extra array.
+// A visible entry must match its own priced listing state by the exact path.
+function item99ListObjects(ldObjects: AnyObject[], own: Canonical99State, transactionType: ScrapeJob['transactionType']): AnyObject[] {
+    const items: AnyObject[] = [];
+    for (const list of ldObjects) {
+        if (list['@type'] !== 'ItemList' || !Array.isArray(list.itemListElement)) continue;
+        for (const element of list.itemListElement.flat(1)) {
+            const href = absoluteUrl(extractListItemUrl(element), 'https://www.99acres.com');
+            const name = extractListItemName(element);
+            if (!href || !name) continue;
+            const url = new URL(href);
+            if (url.protocol !== 'https:' || url.username || url.password || url.port
+                || !['www.99acres.com', '99acres.com'].includes(url.hostname)
+                || !/-spid-[a-z0-9]+$/i.test(url.pathname)) continue;
+            const state = own.byPath.get(url.pathname.toLowerCase());
+            if (!state) continue;
+            const record = JSON.parse(state) as AnyObject;
+            const price = finiteNumber(asString(record.MIN_PRICE));
+            if (price === null || price <= 0) continue;
+            const preference = record.PREFERENCE;
+            if ((preference === 'S' && transactionType === 'rent') || (preference === 'R' && transactionType === 'sale')) continue;
+            url.search = '';
+            url.hash = '';
+            items.push({ url: url.href, name });
+        }
+    }
+    return items;
+}
+
+export function parse99Acres(html: string, job: ScrapeJob, canonical = readCanonical99State(html),
+    mode: 'full' | 'prefix' = 'full',
+): PropertyRecord[] {
     const ldObjects = collectLdObjects(html);
-    const propertyObjects = ldObjects.filter(is99PropertyObject);
+    let propertyObjects = ldObjects.filter(is99PropertyObject);
+    const itemListOnly = propertyObjects.length === 0;
+    if (itemListOnly) {
+        // A visible listing's state can arrive after that of a later item.
+        // Reading the full response preserves the ItemList order.
+        if (mode === 'prefix') return [];
+        canonical ??= readInitial99State(html);
+        if (!canonical) return [];
+        propertyObjects = item99ListObjects(ldObjects, canonical, job.transactionType);
+    }
     const stateByUrl = extract99StateByUrl(html, canonical);
     const records: PropertyRecord[] = [];
     const seenUrls = new Set<string>();
@@ -958,7 +1022,7 @@ export function parse99Acres(html: string, job: ScrapeJob, canonical = readCanon
             cityQuery: job.cityQuery ?? job.city,
             propertyId: extract99AcresId(url) ?? stableId('99acres', url),
             title: title || null,
-            propertyType: state.propertyType ?? extractPropertyType(`${title} ${description}`) ?? 'Apartment',
+            propertyType: state.propertyType ?? extractPropertyType(`${title} ${description}`) ?? (itemListOnly ? null : 'Apartment'),
             bhk: bhk ?? state.bhk ?? null,
             price,
             priceDisplay,
@@ -1151,7 +1215,7 @@ export function complete99Prefix(
     canonical = readCanonical99State(html),
 ): string | null {
     if (job.source !== '99acres' || required !== 1 || !canonical) return null;
-    const rows = parse99Acres(html, job, canonical);
+    const rows = parse99Acres(html, job, canonical, 'prefix');
     const unique = new Set<string>();
     for (const row of rows) {
         const key = propertyKey(row);
@@ -1298,7 +1362,7 @@ function extract99StateByUrl(html: string, canonical: Canonical99State | null): 
     // A recognized complete primary snapshot outranks unrelated later scripts.
     // Ambiguous/missing snapshots retain the existing full-response legacy path.
     if (canonical) {
-        for (const [path, own] of canonical.byPath) map.set(path, extract99StateListing(own, `https://www.99acres.com${path}`));
+        for (const [path, own] of canonical.byPath) map.set(path, extract99StateListing(own, `https://www.99acres.com${path}`, true));
         return map;
     }
     const pdUrlRe = /"PD_URL"\s*:\s*"((?:\\.|[^"\\])+)"/g;
@@ -1316,11 +1380,14 @@ function extract99StateByUrl(html: string, canonical: Canonical99State | null): 
     return map;
 }
 
-function extract99StateListing(windowText: string, url: string): StateListing {
+function extract99StateListing(windowText: string, url: string, ownRecord = false): StateListing {
         const priceDisplay = captureJsonString(windowText, 'PRICE_IN_WORDS');
         const minPrice = finiteNumber(captureJsonString(windowText, 'MIN_PRICE'));
-        const area = extract99StateArea(windowText);
-        const propertyType = extractPropertyType(captureJsonString(windowText, 'PROP_TYPE_LABEL') ?? '');
+        const area = extract99StateArea(windowText, ownRecord);
+        const typeLabel = captureJsonString(windowText, 'PROP_TYPE_LABEL') ?? '';
+        const propertyType = ownRecord
+            ? extract99StatePropertyType(typeLabel) ?? extract99StatePropertyType(captureJsonString(windowText, 'PROPERTY_TYPE') ?? '')
+            : extractPropertyType(typeLabel);
         const imageUrls = extract99ImageUrlsFromText(windowText);
         const listedByText = captureFirstJsonString(windowText, [
             'POSTED_BY',
@@ -1379,17 +1446,18 @@ function find99StateForUrl(
     return {};
 }
 
-function extract99StateArea(windowText: string): { value: number | null; unit: string | null } {
-    const areaCandidates = [
+function extract99StateArea(windowText: string, ownRecord: boolean): { value: number | null; unit: string | null } {
+    const areaCandidates: Array<[string, string]> = [
         ['SUPERBUILTUP_AREA', 'SUPERBUILTUPAREA_UNIT'],
         ['CARPET_AREA', 'CARPETAREA_UNIT'],
         ['BUILTUP_AREA', 'BUILTUPAREA_UNIT'],
-    ] as const;
+    ];
+    if (ownRecord) areaCandidates.push(['SUPER_AREA', 'SUPERAREA_UNIT']);
 
     for (const [areaKey, unitKey] of areaCandidates) {
         const value = finiteNumber(captureJsonString(windowText, areaKey));
         if (value !== null) {
-            const unit = cleanText(captureJsonString(windowText, unitKey)) || 'sqft';
+            const unit = cleanText(captureJsonString(windowText, unitKey)) || (areaKey === 'SUPER_AREA' ? null : 'sqft');
             // Preserve published units so squareFeet can convert square metres/
             // yards correctly instead of treating every "sq" label as feet.
             return { value, unit };
@@ -1397,6 +1465,16 @@ function extract99StateArea(windowText: string): { value: number | null; unit: s
     }
 
     return { value: null, unit: null };
+}
+
+function extract99StatePropertyType(label: string): string | null {
+    const land = /\b(residential|commercial|agricultural|industrial) land\b/i.exec(label)?.[1]?.toLowerCase();
+    if (land) return land === 'residential' ? 'Plot' : `${normalizeLabel(land)} Land`;
+    if (/\boffice\b/i.test(label)) return 'Office Space';
+    if (/\b(?:warehouses?|godowns?)\b/i.test(label)) return 'Warehouse';
+    if (/\bshowrooms?\b/i.test(label)) return 'Showroom';
+    if (/\bshops?\b/i.test(label)) return 'Shop';
+    return extractPropertyType(label);
 }
 
 function capture99AreaType(windowText: string): string | null {

@@ -11,7 +11,7 @@ export function squareFeet(area: number | null, unit: string | null): number | n
     const normalized = unit.toLowerCase().replace(/[.\s_-]+/g, '');
     const factor = ['sqft', 'squarefeet', 'squarefoot', 'ft2', 'ft²'].includes(normalized) ? 1
         : ['sqm', 'sqmeter', 'sqmeters', 'squaremeter', 'squaremeters', 'm2', 'm²', 'mtk'].includes(normalized) ? 10.7639
-        : ['sqyd', 'squareyard', 'squareyards', 'yd2', 'yd²'].includes(normalized) ? 9 : null;
+        : ['sqyd', 'sqyard', 'sqyards', 'squareyard', 'squareyards', 'yd2', 'yd²'].includes(normalized) ? 9 : null;
     return factor ? Math.round(area * factor * 100) / 100 : null;
 }
 

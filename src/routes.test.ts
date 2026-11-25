@@ -183,10 +183,11 @@ test('response cleanup cannot turn permanent proxy authorization into a retryabl
     assert.deepEqual(stub.counts(), { calls: 1, waits: 0 });
 });
 
-test('source 403 can still recover, while upstream proxy credential status 597 stops once', async () => {
+test('the configured proxy can recover from source 403, while upstream credential status 597 stops once', async () => {
     const blocked = recoveryTransport([new Response('Forbidden', { status: 403 }), new Response('No properties found')]);
     let requests = 0;
-    await fetchHtml('https://www.magicbricks.com/', undefined, { onRequestAttempt: () => { requests += 1; } }, blocked.transport);
+    await fetchHtml('https://www.magicbricks.com/', { newUrl: async () => 'http://127.0.0.1:9999' },
+        { onRequestAttempt: () => { requests += 1; } }, blocked.transport);
     assert.deepEqual(blocked.counts(), { calls: 2, waits: 1 });
     assert.equal(requests, 2);
     const unauthorized = recoveryTransport([new Response('Invalid upstream credentials', { status: 597 })]);

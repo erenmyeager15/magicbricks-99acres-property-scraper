@@ -37,6 +37,27 @@ test('accepts full portal search URLs and preserves their filters', () => {
     assert.equal(input.searchUrls[1].city, 'Bengaluru');
 });
 
+test('99acres commercial and plot search URLs retain their city, transaction and page', () => {
+    const input = normalizeInput({ cities: ['Mumbai'], searchUrls: [
+        'https://www.99acres.com/commercial-property-for-rent-in-new-delhi-ffid-page-2',
+        'https://www.99acres.com/residential-land-plots-for-sale-in-hyderabad-ffid',
+    ] });
+    assert.deepEqual(input.searchUrls.map(({ city, transactionType }) => [city, transactionType]), [
+        ['New Delhi', 'rent'], ['Hyderabad', 'sale'],
+    ]);
+    assert.match(input.searchUrls[0].url, /-ffid-page-2$/);
+});
+
+test('standalone PIN codes and project directories get actionable input errors', () => {
+    assert.throws(() => normalizeInput({ cities: ['560001'] }), /City field needs a city name.*PIN-code search/);
+    assert.throws(() => normalizeInput({ searchUrls: ['https://www.magicbricks.com/new-projects-mumbai'] }),
+        /new-projects directory.*property sale or rental results URL/);
+    assert.doesNotThrow(() => normalizeInput({ cities: ['Sector 62, Noida'] }));
+    assert.doesNotThrow(() => normalizeInput({ cities: ['560001'],
+        searchUrls: ['https://www.99acres.com/property-in-bangalore-ffid'],
+    }));
+});
+
 test('rejects lookalike and credential-bearing search URLs', () => {
     assert.throws(
         () => normalizeInput({ searchUrls: ['https://magicbricks.com.evil.example/search'] }),

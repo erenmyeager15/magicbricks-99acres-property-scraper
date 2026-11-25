@@ -91,10 +91,10 @@ Cost-control tips:
 
 | Field | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
-| `searchUrls` | array | no | `[]` | Up to 10 full MagicBricks or 99acres search-result URLs. Preserves portal filters, paginates toward `maxResults`, and overrides the simple source/city search. |
+| `searchUrls` | array | no | `[]` | Up to 10 full MagicBricks or 99acres property results URLs, including 99acres commercial and plot searches. Preserves portal filters, paginates toward `maxResults`, and overrides the simple source/city search. |
 | `source` | string | yes | `magicbricks` | Which portal to scrape: `both`, `magicbricks`, or `99acres`. |
 | `transactionType` | string | yes | `sale` | Listing type: `sale` or `rent`. |
-| `cities` | array | yes | `["Mumbai"]` | Indian city names, e.g. Mumbai, Bengaluru, Pune, Delhi, Chennai, Hyderabad. |
+| `cities` | array | yes | `["Mumbai"]` | Indian city names, e.g. Mumbai, Bengaluru, Pune, Delhi, Chennai, Hyderabad. To search by PIN code, apply the filter on the portal and paste the results URL. |
 | `minPrice` | integer | no | none | Optional minimum price in INR. Listings with unknown prices are skipped when a price filter is set. |
 | `maxPrice` | integer | no | none | Optional maximum price in INR. Listings with unknown prices are skipped when a price filter is set. |
 | `maxResults` | integer | yes | `1` | Maximum unique listings to save (1-500). Start with one result. |
@@ -219,7 +219,8 @@ console.log(`Got ${items.length} properties`);
 
 - Many detail fields are conditional: geo coordinates, seller category, RERA ID, floor, balconies, parking, and deposit are only saved when the source publishes them. MagicBricks rarely exposes coordinates, so those may be `null`.
 - Price filtering skips listings with an unknown price, since they cannot be compared.
-- MagicBricks and 99acres can reject datacenter or direct cloud traffic. The default input uses Apify Residential proxy with India targeting for reliability. Explicit no-proxy runs may receive HTTP 403 and are not silently rerouted.
+- MagicBricks and 99acres can reject datacenter or direct cloud traffic. The default input uses Apify Residential proxy with India targeting. With proxies off, an access rejection or rate limit ends the affected search and the run summary identifies the direct route.
+- Use property results URLs for sales or rentals. MagicBricks new-projects directories have a different format. If a pasted results URL returns HTTP 404 or 410, open a fresh search on the portal and copy its filtered results URL.
 - Listing availability and prices can change after scraping; verify important decisions against the source page.
 - Pagination is bounded to 20 pages per search. Highly repetitive pages can yield fewer unique records than `maxResults`.
 - The Actor stops a search after two failed pages or an all-duplicate page, rather than repeatedly fetching a blocked/repeated search.

@@ -23,6 +23,57 @@ const full = () => first() + ',' + JSON.stringify(own(2, 85_000)) + '],"unused":
 const prefix = (html: string, selected = input, seen = new Set<string>()) => complete99Prefix(html, job, selected, 1, seen, readInitial99State(html));
 const comparable = (row: PropertyRecord) => ({ ...row, scrapedAt: null });
 
+const listOnly = (entries: unknown[], states: Record<string, unknown>[]) =>
+    `<script type="application/ld+json">${JSON.stringify({ '@type': 'ItemList', itemListElement: entries })}</script>`
+    + open + states.map(state => JSON.stringify(state)).join(',') + ']}};</script>';
+
+test('nested commercial rentals pair each public listing with its own price and label', () => {
+    const flat = '/workspace-in-test-city-spid-A91234567';
+    const shop = '/unit-in-test-city-spid-B96543210';
+    const rentals = [
+        { PD_URL: flat, PREFERENCE: 'R', MIN_PRICE: '25,000', PRICE_IN_WORDS: 'INR 25000/month',
+            PROPERTY_TYPE: 'Ready to move office space', CARPET_AREA: 500, CARPETAREA_UNIT: 'sq.ft.' },
+        { PD_URL: shop, PREFERENCE: 'R', MIN_PRICE: 42_000, PRICE_IN_WORDS: 'INR 42000/month',
+            PROPERTY_TYPE: 'Commercial Shops', SUPER_AREA: 600, SUPERAREA_UNIT: 'sq.ft.' },
+    ];
+    const html = listOnly([[
+        { name: 'Foreign copy', url: `https://unrelated.example${flat}` },
+        { name: 'Unit from another search', url: url(7) },
+        { name: 'Development', url: '/development-in-test-city-npxid-R12345' },
+        { item: { name: 'Workspace', url: flat + '?tracking=example#card' } },
+        { name: 'Duplicate workspace', url: flat },
+        { name: 'Street unit', url: shop },
+    ]], [
+        ...rentals,
+        { PD_URL: url(7), PREFERENCE: 'S', MIN_PRICE: 900_000 },
+        { PD_URL: '/development-in-test-city-npxid-R12345', MIN_PRICE: 900_000 },
+    ]);
+    const rows = parse99Acres(html, job);
+    assert.deepEqual(rows.map(row => [row.title, row.propertyType, row.transactionType, row.price, row.area, row.areaUnit, row.propertyUrl]), [
+        ['Workspace', 'Office Space', 'rent', 25_000, 500, 'sq.ft.', `https://www.99acres.com${flat}`],
+        ['Street unit', 'Shop', 'rent', 42_000, 600, 'sq.ft.', `https://www.99acres.com${shop}`],
+    ]);
+    assert.equal(prefix(html), null);
+});
+
+test('plot area in square yards converts to feet; unknown units do not produce a price per foot', () => {
+    const sale = { ...job, transactionType: 'sale' } as const;
+    const path = '/residential-land-in-test-city-spid-P91234567';
+    const basicPlot = { PD_URL: path, PREFERENCE: 'S', MIN_PRICE: 1_800_000, PROPERTY_TYPE: 'Residential Land',
+        SUPER_AREA: 200, LOCALIZED_AREA_TYPE: 'Plot Area' };
+    const item = { name: 'Site 1', url: path };
+    const row = parse99Acres(listOnly([[item]], [{ ...basicPlot, SUPERAREA_UNIT: 'sq.yards' }]), sale)[0];
+    assert.equal(row.propertyType, 'Plot');
+    assert.equal(row.area, 200);
+    assert.equal(row.areaUnit, 'sq.yards');
+    assert.equal(row.areaType, 'Plot Area');
+    assert.equal(row.pricePerSqft, 1_000);
+    const unknown = parse99Acres(listOnly([item], [basicPlot]), sale)[0];
+    assert.equal(unknown.areaUnit, null);
+    assert.equal(unknown.pricePerSqft, null);
+    assert.deepEqual(parse99Acres(listOnly([item], [{ ...basicPlot, PD_URL: path.replace('test-city', 'another-city') }]), sale), []);
+});
+
 test('observed window initial-data frame yields a complete own property before the root/script closes', () => {
     const state = readInitial99State(first());
     assert.ok(state); assert.equal(state.kind, 'initial-data'); assert.equal(state.complete, false);

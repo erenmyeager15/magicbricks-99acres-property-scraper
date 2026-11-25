@@ -282,37 +282,71 @@ test('missing proxy URL retains zero-traffic diagnostics and never advances moni
 
 test('an explicitly proxy-off run still uses direct access when the portal permits it', async () => {
     const check = harness([listings([1])]);
-    check.runtime.createProxy = async () => undefined;
-    await scrapeProperties({ proxyConfiguration: { useApifyProxy: false } }, check.runtime);
+    await scrapeProperties({ proxyConfiguration: {
+        useApifyProxy: false, proxyUrls: [], apifyProxyGroups: ['RESIDENTIAL'], apifyProxyCountry: 'IN',
+    } }, check.runtime);
     assert.equal(check.rows.length, 1);
+    assert.equal(check.counts().proxyCalls, 0);
     assert.equal((check.summary().connection as { effective: string }).effective, 'direct');
 });
 
-test('an all-failed no-proxy 403 run preserves the actionable terminal cause', async () => {
-    const check = harness([]);
-    check.runtime.createProxy = async () => undefined;
-    let attempts = 0;
-    check.runtime.fetchPage = (url, proxy, options) => fetchHtml(url, proxy, options, {
-        fetch: (async () => {
-            attempts += 1;
-            return new Response('Forbidden', { status: 403 });
-        }) as typeof fetch,
-        delay: async () => {},
+for (const [status, body, category, advice] of [
+    [403, 'Forbidden', 'SOURCE_HTTP', /Residential India/],
+    [429, 'Too many requests', 'SOURCE_HTTP', /rate-limited.*Wait/],
+    [200, '<html>Access denied captcha</html>', 'SOURCE_BLOCKED', /Residential India/],
+] as const) {
+    test(`direct HTTP ${status} access rejection stops that search after one request without a proxy`, async () => {
+        const check = harness([]);
+        let attempts = 0;
+        check.runtime.fetchPage = (url, proxy, options) => {
+            assert.equal(proxy, undefined);
+            return fetchHtml(url, proxy, options, {
+                fetch: (async () => {
+                    attempts += 1;
+                    return new Response(body, { status });
+                }) as typeof fetch,
+                delay: async () => { assert.fail('unexpected retry'); },
+            });
+        };
+        await assert.rejects(scrapeProperties({ maxResults: 50, monitorStoreName: 'direct-block',
+            proxyConfiguration: { useApifyProxy: false },
+        }, check.runtime), error => {
+            assert.ok(error instanceof PropertyFailureError);
+            assert.equal(error.info.category, category);
+            assert.equal(error.info.httpStatus, status);
+            assert.match(error.message, /connection: direct/);
+            assert.match(error.message, advice);
+            return true;
+        });
+        assert.equal(attempts, 1);
+        assert.equal(check.rows.length, 0);
+        assert.equal(check.summary().requestAttempts, 1);
+        assert.equal(check.summary().failedPages, 1);
+        assert.equal(check.counts().proxyCalls, 0);
+        assert.equal(check.counts().monitorCalls, 0);
     });
-    await assert.rejects(scrapeProperties({ proxyConfiguration: { useApifyProxy: false } }, check.runtime), error => {
-        assert.ok(error instanceof PropertyFailureError);
-        assert.equal(error.info.category, 'SOURCE_HTTP');
-        assert.equal(error.info.httpStatus, 403);
-        assert.match(error.message, /HTTP 403.*direct/);
-        assert.match(error.message, /Residential India/);
-        return true;
+}
+
+for (const [status, searchUrl] of [
+    [404, 'https://www.magicbricks.com/commercial-real-estate-for-sale-in-test-city-pppfs'],
+    [410, 'https://www.99acres.com/office-space-for-rent-in-test-city-ffid'],
+] as const) {
+    test(`custom search HTTP ${status} asks for a fresh results URL and skips its later pages`, async () => {
+        const check = harness([]);
+        check.runtime.fetchPage = (url, proxy, options) => fetchHtml(url, proxy, options, {
+            fetch: (async () => {
+                check.urls.push(url);
+                return new Response('Unavailable', { status });
+            }) as typeof fetch,
+            delay: async () => { assert.fail('unexpected retry'); },
+        });
+        await assert.rejects(scrapeProperties({ maxResults: 50, searchUrls: [searchUrl] }, check.runtime),
+            /supplied search URL is unavailable.*paste the results URL/);
+        assert.deepEqual(check.urls, [searchUrl]);
+        assert.equal(check.rows.length, 0);
+        assert.equal(check.summary().requestAttempts, 1);
     });
-    assert.equal(attempts, 3);
-    assert.equal(check.rows.length, 0);
-    assert.equal((check.summary().terminalFailure as { httpStatus: number }).httpStatus, 403);
-    assert.equal(check.summary().requestAttempts, 3);
-    assert.equal(check.counts().monitorCalls, 0);
-});
+}
 
 test('legacy SDK proxy groups and country overrides are not labelled Residential India', async () => {
     const check = harness([listings([1])]);

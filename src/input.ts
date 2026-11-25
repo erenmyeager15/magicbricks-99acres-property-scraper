@@ -39,7 +39,7 @@ function cityFromSearchUrl(url: URL, source: Exclude<PropertySource, 'both'>, fa
     try { decodedPath = decodeURIComponent(url.pathname); }
     catch { return invalidInput('Search URL path must contain valid URL-encoded characters.'); }
     const pathMatch = source === '99acres'
-        ? decodedPath.match(/property(?:-for-rent)?-in-(.+?)-ffid(?:-|\/|$)/i)
+        ? decodedPath.match(/-in-([^/]+?)-ffid(?:-|\/|$)/i)
         : decodedPath.match(/property-for-(?:sale|rent)-in-([^/?]+)/i);
 
     return pathMatch?.[1] ? titleFromSlug(pathMatch[1]) : fallbackCity;
@@ -118,6 +118,9 @@ function normalizeSearchUrls(value: unknown, fallbackCity: string): SearchUrlDef
 
         const source = searchUrlSource(url);
         if (!source) invalidInput('Search URL must use magicbricks.com or 99acres.com.');
+        if (source === 'magicbricks' && /^\/new-projects(?:[-/]|$)/i.test(url.pathname)) {
+            invalidInput('This is a MagicBricks new-projects directory. Paste a property sale or rental results URL, or use the City field.');
+        }
         const pageKind = singlePageKind(url, source);
         if (pageKind) {
             invalidInput(`This is a single ${pageKind} page, not a search results page: ${url.origin}${url.pathname}. `
@@ -229,6 +232,9 @@ export function normalizeInput(input: ActorInput | null): NormalizedInput {
     const suppliedSearchUrls = hasSuppliedValues(input?.searchUrls)
         ? input?.searchUrls : input?.searchUrl ?? input?.startUrls;
     const searchUrls = normalizeSearchUrls(suppliedSearchUrls, normalizedCities[0]);
+    if (searchUrls.length === 0 && normalizedCities.some(city => /^\d{6}$/.test(city))) {
+        invalidInput('The City field needs a city name, such as "Pune". For a PIN-code search, apply the filter on the portal and paste its property results URL.');
+    }
     const minPrice = normalizeMoneyFilter(input?.minPrice, 'minPrice');
     const maxPrice = normalizeMoneyFilter(input?.maxPrice, 'maxPrice');
 
