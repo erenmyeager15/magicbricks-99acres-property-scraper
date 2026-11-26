@@ -74,6 +74,23 @@ test('plot area in square yards converts to feet; unknown units do not produce a
     assert.deepEqual(parse99Acres(listOnly([item], [{ ...basicPlot, PD_URL: path.replace('test-city', 'another-city') }]), sale), []);
 });
 
+test('an off-site structured property cannot hide a real nested 99acres plot list', () => {
+    const path = '/residential-land-in-test-city-spid-P91234567';
+    const offsite = '<script type="application/ld+json">' + JSON.stringify({
+        '@type': 'Apartment', name: 'Unrelated listing', url: 'https://unrelated.example' + path,
+        offers: { price: 1, priceCurrency: 'INR' },
+    }) + '</script>';
+    const html = offsite + listOnly([[{ name: 'Site 1', url: path }]], [
+        { PD_URL: path, PREFERENCE: 'S', MIN_PRICE: 1_800_000, PROPERTY_TYPE: 'Residential Land' },
+    ]);
+    const sale = { ...job, transactionType: 'sale' } as const;
+    assert.deepEqual(parse99Acres(offsite, sale), []);
+    const rows = parse99Acres(html, sale);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].propertyUrl, 'https://www.99acres.com' + path);
+    assert.equal(rows[0].price, 1_800_000);
+});
+
 test('observed window initial-data frame yields a complete own property before the root/script closes', () => {
     const state = readInitial99State(first());
     assert.ok(state); assert.equal(state.kind, 'initial-data'); assert.equal(state.complete, false);

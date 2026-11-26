@@ -67,6 +67,30 @@ function harness(pages: Array<string | Error>, budget = Infinity) {
         counts: () => ({ proxyCalls, waits, recoveries, monitorCalls }) };
 }
 
+test('MagicBricks saves neighboring listings when a tracking query or listing slug has a broken escape', async () => {
+    const html = listings([1001, 1002, 1003])
+        .replaceAll('id=1001.htm', 'id=1001.htm?tracking=%')
+        .replaceAll('Mumbai&id=1002.htm', 'Mumbai%&id=1002.htm')
+        .replaceAll('Mumbai&amp;id=1002.htm', 'Mumbai%&amp;id=1002.htm');
+    const check = harness([html], 3);
+    await scrapeProperties({ maxResults: 3 }, check.runtime);
+    assert.deepEqual(check.rows.map(row => row.propertyId), ['1001.htm', '1002.htm', '1003.htm']);
+    assert(check.rows.every(row => row.price === 8_500_000));
+    assert.equal(check.summary().requestAttempts, 1);
+    assert.equal(check.summary().failedPages, 0);
+});
+
+test('MagicBricks does not save off-site or credential-bearing listings from structured data', async () => {
+    const html = listings([1001, 1002, 1003])
+        .replace(/https:\/\/www\.magicbricks\.com(\/propertyDetails\/[^"]*?id=1002\.htm)/g, 'https://unrelated.example$1')
+        .replace(/https:\/\/www\.magicbricks\.com(\/propertyDetails\/[^"]*?id=1003\.htm)/g, 'https://fixture@www.magicbricks.com$1');
+    const check = harness([html], 3);
+    await scrapeProperties({ maxResults: 3 }, check.runtime);
+    assert.deepEqual(check.rows.map(row => row.propertyId), ['1001.htm']);
+    assert.equal(check.summary().savedListings, 1);
+    assert.equal(check.summary().failedPages, 0);
+});
+
 test('zero remaining budget stops before proxy setup or traffic and does not advance a watchlist', async () => {
     const check = harness([], 0);
     await scrapeProperties({ maxResults: 25, monitorStoreName: 'budget-watch' }, check.runtime);

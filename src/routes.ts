@@ -840,7 +840,7 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
     const records: PropertyRecord[] = [];
     const usedListItems = new Set<number>();
     const pairs = chunks.map(chunk => {
-        const cardUrl = absoluteUrl(extractMagicUrl(chunk), 'https://www.magicbricks.com');
+        const cardUrl = extractMagicUrl(chunk);
         const titleMatches = cardUrl ? [] : listItems.map((item, index) => ({ item, index }))
             .filter(({ item }) => item.name && cleanText(stripHtml(chunk)).includes(item.name));
         const listIndex = cardUrl ? listItems.findIndex(item => magicUrlKey(item.url) === magicUrlKey(cardUrl))
@@ -855,7 +855,7 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
     for (const [index, pair] of pairs.entries()) {
         const { listItem, chunk, cardUrl } = pair;
         const text = cleanText(stripHtml(chunk));
-        const propertyUrl = absoluteUrl(cardUrl ?? listItem?.url ?? null, 'https://www.magicbricks.com');
+        const propertyUrl = cardUrl ?? listItem?.url;
 
         if (!propertyUrl) continue;
 
@@ -933,12 +933,10 @@ function item99ListObjects(ldObjects: AnyObject[], own: Canonical99State, transa
     for (const list of ldObjects) {
         if (list['@type'] !== 'ItemList' || !Array.isArray(list.itemListElement)) continue;
         for (const element of list.itemListElement.flat(1)) {
-            const href = absoluteUrl(extractListItemUrl(element), 'https://www.99acres.com');
+            const url = portalListingUrl(extractListItemUrl(element), '99acres.com');
             const name = extractListItemName(element);
-            if (!href || !name) continue;
-            const url = new URL(href);
-            if (url.protocol !== 'https:' || url.username || url.password || url.port
-                || !['www.99acres.com', '99acres.com'].includes(url.hostname)
+            if (!url || !name) continue;
+            if (url.protocol !== 'https:' || !['www.99acres.com', '99acres.com'].includes(url.hostname)
                 || !/-spid-[a-z0-9]+$/i.test(url.pathname)) continue;
             const state = own.byPath.get(url.pathname.toLowerCase());
             if (!state) continue;
@@ -974,7 +972,7 @@ export function parse99Acres(html: string, job: ScrapeJob, canonical = readCanon
     const seenUrls = new Set<string>();
 
     for (const [index, item] of propertyObjects.entries()) {
-        const url = absoluteUrl(asString(item.url), 'https://www.99acres.com');
+        const url = portalListingUrl(asString(item.url), '99acres.com')?.href;
         if (!url || seenUrls.has(url)) continue;
         seenUrls.add(url);
 
@@ -1087,22 +1085,19 @@ export function calculatePricePerSqft(
         ? Math.round(price / normalizedArea) : null;
 }
 
-function extractMagicListItems(html: string): Array<{ name: string | null; url: string | null }> {
+function extractMagicListItems(html: string): Array<{ name: string | null; url: string }> {
     const lists: unknown[] = [];
     for (const object of collectLdObjects(html)) findItemLists(object, lists);
 
-    const itemList = lists
-        .map((list) => Array.isArray((list as AnyObject).itemListElement) ? (list as AnyObject).itemListElement as unknown[] : [])
-        .find((items) => items.some((item) => Boolean(extractListItemUrl(item))));
-
-    if (!itemList) return [];
-
-    return itemList
-        .map((item) => ({
-            name: cleanText(extractListItemName(item)) || null,
-            url: extractListItemUrl(item),
-        }))
-        .filter((item) => item.url);
+    for (const list of lists) {
+        const items: Array<{ name: string | null; url: string }> = [];
+        for (const item of (list as { itemListElement: unknown[] }).itemListElement) {
+            const url = portalListingUrl(extractListItemUrl(item), 'magicbricks.com');
+            if (url) items.push({ name: cleanText(extractListItemName(item)) || null, url: url.href });
+        }
+        if (items.length > 0) return items;
+    }
+    return [];
 }
 
 function extractMagicCardChunks(html: string): string[] {
@@ -1111,14 +1106,8 @@ function extractMagicCardChunks(html: string): string[] {
 
 function extractMagicUrl(chunk: string): string | null {
     for (const match of chunk.matchAll(/href=["']([^"']+)["']/gi)) {
-        const href = decodeHtml(match[1].replace(/\\\//g, '/'));
-        const absolute = absoluteUrl(href, 'https://www.magicbricks.com');
-        if (!absolute) continue;
-        try {
-            const url = new URL(absolute);
-            if ((url.hostname === 'magicbricks.com' || url.hostname.endsWith('.magicbricks.com'))
-                && (/propertyDetails/i.test(url.pathname) || /\.htm$/i.test(url.pathname))) return absolute;
-        } catch { /* Ignore malformed links; never attach another listing's price by position. */ }
+        const url = portalListingUrl(match[1].replace(/\\\//g, '/'), 'magicbricks.com');
+        if (url && (/propertyDetails/i.test(url.pathname) || /\.htm$/i.test(url.pathname))) return url.href;
     }
     return null;
 }
@@ -1248,7 +1237,17 @@ function extractMagicTitle(text: string, city: string): string | null {
 }
 
 function extractMagicId(url: string): string | null {
-    const decodedUrl = decodeURIComponent(url);
+    let decodedUrl: string;
+    try {
+        decodedUrl = decodeURIComponent(url);
+    } catch {
+        // A broken escape in the slug or tracking query must not abort the page.
+        const listing = new URL(url);
+        const queryId = listing.searchParams.get('id');
+        if (queryId) return queryId;
+        decodedUrl = listing.pathname;
+        try { decodedUrl = decodeURIComponent(decodedUrl); } catch { /* Retain a readable literal ID. */ }
+    }
     return decodedUrl.match(/[?&]id=([^&]+)/i)?.[1]
         ?? decodedUrl.match(/\/([^/?#]+)\.htm/i)?.[1]
         ?? null;
@@ -1331,7 +1330,7 @@ function is99PropertyObject(item: AnyObject): boolean {
     const type = item['@type'];
     const types = Array.isArray(type) ? type.map(String) : [String(type ?? '')];
     return types.some((value) => ['Apartment', 'House', 'Residence', 'Product'].includes(value))
-        && Boolean(asString(item.url))
+        && Boolean(portalListingUrl(asString(item.url), '99acres.com'))
         && Boolean(asString(item.name));
 }
 
@@ -1370,11 +1369,11 @@ function extract99StateByUrl(html: string, canonical: Canonical99State | null): 
 
     while ((match = pdUrlRe.exec(html)) !== null) {
         const path = decodeJsonString(match[1]);
-        const url = absoluteUrl(path, 'https://www.99acres.com');
+        const url = portalListingUrl(path, '99acres.com');
         if (!url) continue;
 
         const windowText = html.slice(Math.max(0, match.index - 5000), Math.min(html.length, match.index + 4500));
-        map.set(new URL(url).pathname.toLowerCase(), extract99StateListing(windowText, url));
+        map.set(url.pathname.toLowerCase(), extract99StateListing(windowText, url.href));
     }
 
     return map;
@@ -1878,10 +1877,13 @@ function slugCity(city: string): string {
         .replace(/^-|-$/g, '');
 }
 
-function absoluteUrl(url: string | null, base: string): string | null {
-    if (!url) return null;
+function portalListingUrl(href: string | null, domain: 'magicbricks.com' | '99acres.com'): URL | null {
+    if (!href?.trim()) return null;
     try {
-        return new URL(url, base).toString();
+        const url = new URL(decodeHtml(href), `https://www.${domain}`);
+        if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.username || url.password || url.port) return null;
+        if (url.hostname !== domain && !url.hostname.endsWith(`.${domain}`)) return null;
+        return url;
     } catch {
         return null;
     }
