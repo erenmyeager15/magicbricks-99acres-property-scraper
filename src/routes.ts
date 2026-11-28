@@ -863,7 +863,11 @@ export function parseMagicBricks(html: string, job: ScrapeJob): PropertyRecord[]
         const portalCity = parseCityInput('magicbricks', job.city).city;
         const title = cleanText(listItem?.name) || extractMagicTitle(text, portalCity);
         const location = parseMagicLocation(title, portalCity);
-        const priceDisplay = extractPriceDisplay(text);
+        const textPrice = extractPriceDisplay(text);
+        const cardRent = job.transactionType === 'rent' ? extractMagicCardRent(chunk) : null;
+        // The price element is the asking rent. Keep text details only at the same amount.
+        const priceDisplay = cardRent && parseIndianMoney(cardRent) !== parseIndianMoney(textPrice)
+            ? cardRent : textPrice ?? cardRent;
         const price = parseIndianMoney(priceDisplay);
         const area = extractArea(text);
         const bhk = extractBhk(title) ?? extractBhk(text);
@@ -1110,6 +1114,12 @@ function extractMagicUrl(chunk: string): string | null {
         if (url && (/propertyDetails/i.test(url.pathname) || /\.htm$/i.test(url.pathname))) return url.href;
     }
     return null;
+}
+
+function extractMagicCardRent(chunk: string): string | null {
+    const amount = chunk.match(/<div\b[^>]*\sclass\s*=\s*(["'])(?:[^"']*\s)?mb-srp__card__price--amount(?:\s[^"']*)?\1[^>]*>([\s\S]*?)<\/div\s*>/i)?.[2];
+    // A currency amount inside the asking-price element can be below the generic price cutoff.
+    return amount ? extractPriceDisplay(stripHtml(amount), 1) : null;
 }
 
 function magicUrlKey(url: string | null): string | null {
@@ -1725,7 +1735,7 @@ function extractPropertyType(text: string): string | null {
     return found === 'Flat' ? 'Apartment' : found;
 }
 
-export function extractPriceDisplay(text: string | null): string | null {
+export function extractPriceDisplay(text: string | null, minimumCurrencyAmount = 100_000): string | null {
     if (!text) return null;
     const candidates = [...text.matchAll(/(?:\u20b9|Rs\.?|INR)\s*\d[\d,.]*(?:\s*(?:Lac|Lakh|Cr|Crore))?(?:\s*-\s*(?:\u20b9|Rs\.?|INR)?\s*\d[\d,.]*(?:\s*(?:Lac|Lakh|Cr|Crore))?)?(?:\s*(?:\/\s*month|monthly))?/gi)]
         .map((match) => ({
@@ -1736,7 +1746,7 @@ export function extractPriceDisplay(text: string | null): string | null {
         .filter(({ value }) => Boolean(value));
 
     const matches = candidates
-        .filter(({ value, before, context }) => !isAncillaryFee(before) && isUsefulPriceCandidate(value, context))
+        .filter(({ value, before, context }) => !isAncillaryFee(before) && isUsefulPriceCandidate(value, context, minimumCurrencyAmount))
         .map(({ value }) => value);
 
     if (matches.length > 0) return matches[0];
@@ -1750,11 +1760,11 @@ function isAncillaryFee(before: string): boolean {
     return /(?:maintenance(?:\s+charges?)?|(?:security\s+)?deposit|emi|booking\s+amount)\s*[:\-]?\s*(?:(?:INR|Rs\.?|\u20b9)\s*)?$/i.test(before);
 }
 
-function isUsefulPriceCandidate(value: string, context: string): boolean {
+function isUsefulPriceCandidate(value: string, context: string, minimumCurrencyAmount: number): boolean {
     if (/\b(?:Lac|Lakh|Cr|Crore)\b/i.test(value)) return true;
     if (/(?:\/\s*month|monthly)/i.test(value)) return true;
     if (/^\s*(?:\/\s*sqft|per\s+sqft|sq\.?\s*ft|emi\b)/i.test(context)) return false;
-    return (parseIndianMoney(value) ?? 0) >= 100000;
+    return (parseIndianMoney(value) ?? 0) >= minimumCurrencyAmount;
 }
 
 export function parseIndianMoney(display: string | null): number | null {

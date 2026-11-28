@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readInitial99State } from './99acres-initial-state.js';
-import { complete99Prefix, fetchHtml, parse99Acres, readBoundedResponseText, scrapeProperties, type PropertyScrapeRuntime } from './routes.js';
+import { buildJobs, complete99Prefix, fetchHtml, parse99Acres, readBoundedResponseText, scrapeProperties, type PropertyScrapeRuntime } from './routes.js';
 import { normalizeInput } from './input.js';
 import type { ScrapeJob, PropertyRecord } from './types.js';
 import { Response, type fetch } from 'undici';
@@ -56,14 +56,19 @@ test('nested commercial rentals pair each public listing with its own price and 
     assert.equal(prefix(html), null);
 });
 
-test('plot area in square yards converts to feet; unknown units do not produce a price per foot', () => {
-    const sale = { ...job, transactionType: 'sale' } as const;
+test('a tracked sale URL saves its plot and converts square yards; unknown units give no price per foot', () => {
+    const searchUrl = 'https://www.99acres.com/residential-land-plots-for-sale-in-hyderabad-ffid?utm_campaign=rent';
+    const [sale] = buildJobs(normalizeInput({ searchUrls: [searchUrl] }), ['99acres']);
     const path = '/residential-land-in-test-city-spid-P91234567';
     const basicPlot = { PD_URL: path, PREFERENCE: 'S', MIN_PRICE: 1_800_000, PROPERTY_TYPE: 'Residential Land',
         SUPER_AREA: 200, LOCALIZED_AREA_TYPE: 'Plot Area' };
     const item = { name: 'Site 1', url: path };
     const row = parse99Acres(listOnly([[item]], [{ ...basicPlot, SUPERAREA_UNIT: 'sq.yards' }]), sale)[0];
+    assert.ok(row, 'the tagged sale search must retain the portal’s sale plot');
     assert.equal(row.propertyType, 'Plot');
+    assert.equal(row.transactionType, 'sale');
+    assert.equal(row.cityQuery, 'Hyderabad');
+    assert.equal(row.searchUrl, searchUrl);
     assert.equal(row.area, 200);
     assert.equal(row.areaUnit, 'sq.yards');
     assert.equal(row.areaType, 'Plot Area');

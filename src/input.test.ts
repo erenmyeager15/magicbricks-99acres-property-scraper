@@ -37,6 +37,31 @@ test('accepts full portal search URLs and preserves their filters', () => {
     assert.equal(input.searchUrls[1].city, 'Bengaluru');
 });
 
+test('MagicBricks public city pages use the city in the path and preserve an explicit city filter', () => {
+    const input = normalizeInput({ searchUrls: [
+        'https://www.magicbricks.com/flats-in-pune-for-sale-pppfs',
+        'https://www.magicbricks.com/flats-for-rent-in-pune-pppfr',
+        'https://www.magicbricks.com/property-for-sale-in-navi-mumbai-pppfs/',
+        'https://www.magicbricks.com/flats-in-pune-for-sale-pppfs?cityName=Nashik',
+    ] });
+    assert.deepEqual(input.searchUrls.map(({ city, transactionType }) => [city, transactionType]), [
+        ['Pune', 'sale'], ['Pune', 'rent'], ['Navi Mumbai', 'sale'], ['Nashik', 'sale'],
+    ]);
+});
+
+test('transaction routes take precedence over query text and UTM tags cannot turn sales into rentals', () => {
+    const searchUrls = [
+        'https://www.99acres.com/residential-land-plots-for-sale-in-hyderabad-ffid?utm_campaign=rent',
+        'https://www.99acres.com/commercial-property-in-pune-ffid?UTM_campaign=rent',
+        'https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=Pune&source=rent',
+        'https://www.99acres.com/property-for-rent-in-pune-ffid?utm_campaign=sale',
+        'https://www.magicbricks.com/search?searchType=rent',
+    ];
+    const input = normalizeInput({ searchUrls });
+    assert.deepEqual(input.searchUrls.map(({ transactionType }) => transactionType), ['sale', 'sale', 'sale', 'rent', 'rent']);
+    assert.deepEqual(input.searchUrls.map(({ url }) => url), searchUrls);
+});
+
 test('99acres commercial and plot search URLs retain their city, transaction and page', () => {
     const input = normalizeInput({ cities: ['Mumbai'], searchUrls: [
         'https://www.99acres.com/commercial-property-for-rent-in-new-delhi-ffid-page-2',

@@ -91,6 +91,30 @@ test('MagicBricks does not save off-site or credential-bearing listings from str
     assert.equal(check.summary().failedPages, 0);
 });
 
+test('MagicBricks uses the rental card price, keeps evidenced periods, and filters on the asking rent', async () => {
+    const card = (id: number, body: string) => `<div class="mb-srp__card">`
+        + `<a href="https://www.magicbricks.com/propertyDetails/2-BHK-flat-for-Rent-in-Pune&amp;id=${id}.htm">2 BHK Flat in Pune</a>`
+        + `<div>Carpet Area 850 sqft</div>${body}</div>`;
+    const amount = (price: string) => `<div class="visible mb-srp__card__price--amount">`
+        + `<span class="rupees">&#8377;</span>${price}<span class="mb-srp__card__price--ico-info"></span></div>`;
+    const html = card(1001, `<div>Nearby monthly rates can reach INR 175,000</div>${amount('25,000')}`)
+        + card(1002, '<div class="mb-srp__card__price--other-charges">Security Deposit: INR 150,000</div>')
+        + card(1003, amount('32,000') + '<div>This flat is available at INR 32,000 /month.</div>');
+    const input = { searchUrls: ['https://www.magicbricks.com/flats-for-rent-in-pune-pppfr'], maxResults: 3 };
+
+    const all = harness([html]);
+    await scrapeProperties(input, all.runtime);
+    assert.deepEqual(all.rows.map(({ price, priceBasis }) => [price, priceBasis]), [
+        [25_000, 'unknown'], [null, 'unknown'], [32_000, 'monthly_rent'],
+    ]);
+    assert.ok(all.rows.every(row => row.city === 'Pune' && row.transactionType === 'rent'));
+
+    const filtered = harness([html]);
+    await scrapeProperties({ ...input, minPrice: 20_000, maxPrice: 30_000 }, filtered.runtime);
+    assert.deepEqual(filtered.rows.map(row => row.propertyId), ['1001.htm']);
+    assert.equal(filtered.summary().failedPages, 0);
+});
+
 test('zero remaining budget stops before proxy setup or traffic and does not advance a watchlist', async () => {
     const check = harness([], 0);
     await scrapeProperties({ maxResults: 25, monitorStoreName: 'budget-watch' }, check.runtime);

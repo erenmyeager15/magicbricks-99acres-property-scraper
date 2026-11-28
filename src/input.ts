@@ -20,6 +20,7 @@ const DEFAULT_PROXY: Record<string, unknown> = {
 const MAX_CITIES = 20;
 const MAX_RESULTS = 500;
 const MAX_SEARCH_URLS = 10;
+const MAGICBRICKS_CITY_RESULTS_PATH = /-in-([^/]+?)(?:-for-(?:sale|rent))?-pppf([rs])\/?$/i;
 
 function titleFromSlug(value: string): string {
     return value
@@ -40,9 +41,23 @@ function cityFromSearchUrl(url: URL, source: Exclude<PropertySource, 'both'>, fa
     catch { return invalidInput('Search URL path must contain valid URL-encoded characters.'); }
     const pathMatch = source === '99acres'
         ? decodedPath.match(/-in-([^/]+?)-ffid(?:-|\/|$)/i)
-        : decodedPath.match(/property-for-(?:sale|rent)-in-([^/?]+)/i);
+        : decodedPath.match(MAGICBRICKS_CITY_RESULTS_PATH)
+            ?? decodedPath.match(/property-for-(?:sale|rent)-in-([^/?]+)/i);
 
     return pathMatch?.[1] ? titleFromSlug(pathMatch[1]) : fallbackCity;
+}
+
+function transactionFromSearchUrl(url: URL, source: Exclude<PropertySource, 'both'>): TransactionType {
+    if (source === 'magicbricks') {
+        const marker = url.pathname.match(MAGICBRICKS_CITY_RESULTS_PATH)?.[2]?.toLowerCase();
+        if (marker) return marker === 'r' ? 'rent' : 'sale';
+    }
+    const routeType = url.pathname.match(/(?:^|[/-])for-(sale|rent)(?:[/-]|$)/i)?.[1]?.toLowerCase();
+    if (routeType === 'sale' || routeType === 'rent') return routeType;
+
+    // Keep the existing rental hint on generic routes. Campaign attribution is not a search filter.
+    const rentalQuery = [...url.searchParams].some(([key, value]) => !/^utm_/i.test(key) && /\brent\b/i.test(`${key}=${value}`));
+    return /\brent\b/i.test(url.pathname) || rentalQuery ? 'rent' : 'sale';
 }
 
 /** Listing and project pages hold one property, not a results list. Verified
@@ -134,14 +149,11 @@ function normalizeSearchUrls(value: unknown, fallbackCity: string): SearchUrlDef
         if (seen.has(normalizedUrl)) continue;
         seen.add(normalizedUrl);
 
-        const transactionType: TransactionType = /property-for-rent|\brent\b/i.test(`${url.pathname} ${url.search}`)
-            ? 'rent'
-            : 'sale';
         const city = cityFromSearchUrl(url, source, fallbackCity);
 
         output.push({
             source,
-            transactionType,
+            transactionType: transactionFromSearchUrl(url, source),
             city,
             citySlug: city.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'custom-search',
             url: normalizedUrl,
